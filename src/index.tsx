@@ -1,26 +1,26 @@
 import React, { useState, useEffect, useMemo, useRef, useLayoutEffect, useCallback } from 'react';
 import ReactDOM from 'react-dom/client';
-import { IndiaMapBackground } from '../IndiaMap.tsx';
-import { Header } from './components/Header.tsx';
-import { MapControls } from './components/MapControls.tsx';
+import { IndiaMapBackground } from './components/IndiaMap';
+import { Header } from './components/Header';
+import { MapControls } from './components/MapControls';
 
-import { mapData, downloadsData } from './data/data.ts';
-import { useQuizEngine } from './hooks/useQuizEngine.ts';
-import { LocationInfoModal } from './components/SharedComponents.tsx';
-import { useMapZoom } from './hooks/useMapZoom.ts';
-import { playSound } from './utils/index.ts';
-import { InfoPage } from './components/InfoPage.tsx';
-import { SupportPage } from './components/SupportPage.tsx';
-import { MarkersLayer, LabelsLayer } from './components/MapLayers.tsx';
+import { mapData, downloadsData } from './data/data';
+import { useQuizEngine, HINT_COST } from './hooks/useQuizEngine';
+import { LocationInfoModal } from './components/SharedComponents';
+import { useMapZoom } from './hooks/useMapZoom';
+import { InfoPage } from './components/InfoPage';
+import { SupportPage } from './components/SupportPage';
+import { MarkersLayer, LabelsLayer } from './components/MapLayers';
 import { 
     DownloadsPage, 
     CategoryModal, 
     CalibrationExportModal, 
     QuizSummary, 
     CountdownOverlay 
-} from './components/SharedComponents.tsx';
+} from './components/SharedComponents';
+import { MapLocation } from './types';
 
-const App = () => {
+const App: React.FC = () => {
     // Navigation State
     const [currentPage, setCurrentPage] = useState('map');
     
@@ -29,20 +29,37 @@ const App = () => {
     const [isCategoryModalOpen, setIsCategoryModalOpen] = useState(false);
     const [mode, setMode] = useState<'practice' | 'quiz'>('practice');
     
-    // Map Viewport State
-    const [viewState, setViewState] = useState({ k: 1, x: 0, y: 0 });
-    const [isDragging, setIsDragging] = useState(false);
-    const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
+    // Container dimension state for marker/label scaling
     const [mapWidth, setMapWidth] = useState(
         typeof window !== 'undefined' ? Math.min(window.innerWidth, 1200) : 1000
     );
     
+    // Map ref for zoom and pan interactions
+    const mapRef = useRef<HTMLDivElement>(null);
+
+    // Zoom, Pan & Drag engine via custom hook
+    const {
+        viewState,
+        setViewState,
+        isDragging,
+        zoomToLocation,
+        zoomAtCenter,
+        resetView,
+        handleMouseDown,
+        handleTouchStart,
+        handleTouchMove,
+        handleTouchEnd,
+        handleKeyDown,
+        isPinching
+    } = useMapZoom(mapRef);
+    
     // Quiz State (from Hook)
     const {
-        quizActive, setQuizActive, quizQueue, currentQuestionIndex, quizTarget, points, setPoints,
+        quizActive, setQuizActive, quizQueue, currentQuestionIndex, quizTarget, points,
         quizFeedback, hintRevealed, quizLocked, quizMistakes, isQuizSummaryOpen, setIsQuizSummaryOpen,
-        streak, countdownVal, setCountdownVal, wrongLocation, pointAnimation, setPointAnimation,
-        initQuizSession, finishQuiz, proceedToNextQuestion, handleMapClick: engineHandleMapClick, handleUseHint, skipQuestion, resetQuizState
+        streak, countdownVal, setCountdownVal, wrongLocation, pointAnimation,
+        initQuizSession, proceedToNextQuestion, handleMapClick: engineHandleMapClick,
+        handleUseHint, skipQuestion, resetQuizState
     } = useQuizEngine();
 
     // Practice State
@@ -52,23 +69,11 @@ const App = () => {
     // Calibration State
     const [isCalibrating, setIsCalibrating] = useState(false);
     const [calibratedMapData, setCalibratedMapData] = useState(mapData);
-    const [calibrationTargetIndex, setCalibrationTargetIndex] = useState<{catIndex: number, locIndex: number} | null>(null);
+    const [calibrationTargetIndex, setCalibrationTargetIndex] = useState<{ catIndex: number; locIndex: number } | null>(null);
     const [isExportModalOpen, setIsExportModalOpen] = useState(false);
 
     // Info Modal State
-    const [infoModalData, setInfoModalData] = useState<any>(null);
-
-    // Refs
-    const mapRef = useRef<HTMLDivElement>(null);
-    const gestureRef = useRef({
-        startDist: 0,
-        startK: 1,
-        startX: 0,
-        startY: 0,
-        centerX: 0,
-        centerY: 0,
-        isPinching: false
-    });
+    const [infoModalData, setInfoModalData] = useState<(MapLocation & { icon?: string }) | null>(null);
     
     // Check for calibration mode on mount
     useEffect(() => {
@@ -93,17 +98,17 @@ const App = () => {
                 return () => clearTimeout(timeout);
             }
         }
-    }, [countdownVal]);
+    }, [countdownVal, setCountdownVal, setQuizActive]);
 
     useLayoutEffect(() => {
         const observer = new ResizeObserver(entries => {
-            for(let entry of entries) {
+            for (const entry of entries) {
                 if (entry.contentRect.width > 0) {
                     setMapWidth(entry.contentRect.width);
                 }
             }
         });
-        if(mapRef.current) observer.observe(mapRef.current);
+        if (mapRef.current) observer.observe(mapRef.current);
         return () => observer.disconnect();
     }, []);
 
@@ -122,118 +127,50 @@ const App = () => {
     const activeSet = useMemo(() => calibratedMapData.find(d => d.title === selectedCategory) || calibratedMapData[0], [selectedCategory, calibratedMapData]);
     const activeCatIndex = useMemo(() => calibratedMapData.findIndex(d => d.title === selectedCategory), [selectedCategory, calibratedMapData]);
 
-    const startQuizSession = useCallback((locations: any[]) => {
+    const startQuizSession = useCallback((locations: MapLocation[]) => {
         initQuizSession(locations);
-        setViewState({ k: 1, x: 0, y: 0 });
+        resetView();
         if (window.innerWidth < 768) {
             setIsSidebarExpanded(false); 
         }
-    }, [initQuizSession]);
+    }, [initQuizSession, resetView]);
 
     useEffect(() => {
-        if (isCalibrating) return; // Don't run this logic in calibration mode
+        if (isCalibrating) return;
         setActiveLocationName(null);
         
         if (mode === 'quiz') {
             startQuizSession(activeSet.locations);
         } else {
             resetQuizState();
-            setViewState({ k: 1, x: 0, y: 0 });
+            resetView();
         }
-    }, [selectedCategory, mode, activeSet, startQuizSession, isCalibrating, resetQuizState]);
+    }, [selectedCategory, mode, activeSet, startQuizSession, isCalibrating, resetQuizState, resetView]);
 
     useEffect(() => {
         if (quizActive) {
-            setViewState({ k: 1, x: 0, y: 0 });
+            resetView();
         }
-    }, [currentQuestionIndex, quizActive]);
-
-    /**
-     * Smoothly zooms the map to a specific SVG coordinate.
-     * @param {number} x - SVG X coordinate.
-     * @param {number} y - SVG Y coordinate.
-     */
-    const zoomToLocation = (x: number, y: number) => {
-        if (!mapRef.current) return;
-        const container = mapRef.current.getBoundingClientRect();
-        const svgW = 21000, svgH = 29700;
-        const scaleX = container.width / svgW;
-        const scaleY = container.height / svgH;
-        const baseScale = Math.min(scaleX, scaleY);
-        
-        const targetK = 3; 
-        const renderedW = svgW * baseScale;
-        const renderedH = svgH * baseScale;
-        const offsetX = (container.width - renderedW) / 2;
-        const offsetY = (container.height - renderedH) / 2;
-        
-        const targetPx = (x * baseScale) + offsetX;
-        const targetPy = (y * baseScale) + offsetY;
-        
-        const newX = (container.width / 2) - (targetPx * targetK);
-        const newY = (container.height / 2) - (targetPy * targetK);
-        
-        setViewState({ k: targetK, x: newX, y: newY });
-    };
-
-    /**
-     * Zooms the map relative to the current viewport center.
-     * @param {number} factor - Zoom multiplier (e.g., 1.2 for zoom in, 0.8 for zoom out).
-     */
-    const zoomAtCenter = (factor: number) => {
-        if (!mapRef.current) return;
-        const rect = mapRef.current.getBoundingClientRect();
-        const cx = rect.width / 2;
-        const cy = rect.height / 2;
-        
-        setViewState(prev => {
-            const newK = Math.min(Math.max(1, prev.k * factor), 8);
-            const newX = cx - (cx - prev.x) * (newK / prev.k);
-            const newY = cy - (cy - prev.y) * (newK / prev.k);
-            return { k: newK, x: newX, y: newY };
-        });
-    };
-
-    /**
-     * Handles keyboard shortcuts for map navigation.
-     */
-    const handleKeyDown = (e: React.KeyboardEvent) => {
-        const step = 50; 
-        if (e.key === 'ArrowUp') setViewState(v => ({ ...v, y: v.y + step }));
-        if (e.key === 'ArrowDown') setViewState(v => ({ ...v, y: v.y - step }));
-        if (e.key === 'ArrowLeft') setViewState(v => ({ ...v, x: v.x + step }));
-        if (e.key === 'ArrowRight') setViewState(v => ({ ...v, x: v.x - step }));
-        if (e.key === '=' || e.key === '+') zoomAtCenter(1.2);
-        if (e.key === '-' || e.key === '_') zoomAtCenter(1/1.2);
-    };
-
-    /**
-     * Triggers a floating point animation at the score display.
-     * @param {number} val - The point value to animate (e.g., +100 or -20).
-     */
-    const animatePoints = (val: number) => {
-        setPointAnimation({ val, id: Date.now() });
-        setTimeout(() => setPointAnimation(null), 1000);
-    };
+    }, [currentQuestionIndex, quizActive, resetView]);
 
     /**
      * Handles clicking a location in practice mode.
      * Zooms to the location and shows its label.
      */
-    const handlePracticeClick = (loc: any) => {
+    const handlePracticeClick = useCallback((loc: MapLocation) => {
         setActiveLocationName(loc.name);
         setIsSidebarExpanded(false); 
         zoomToLocation(loc.coords.x, loc.coords.y);
-    };
+    }, [zoomToLocation]);
 
-    const startQuiz = () => {
+    const startQuiz = useCallback(() => {
         if (isCalibrating) return;
         setMode('quiz'); 
-    };
+    }, [isCalibrating]);
     
     /**
      * Handles map clicks specifically for calibration mode.
-     * Updates the coordinates of the currently targeted location.
+     * Updates the coordinates of the currently targeted location without heavy JSON clone.
      */
     const handleCalibrationMapClick = (e: React.MouseEvent) => {
         if (!isCalibrating || !calibrationTargetIndex || !mapRef.current) return;
@@ -250,15 +187,20 @@ const App = () => {
         const newX = Math.round(svgP.x);
         const newY = Math.round(svgP.y);
     
-        setCalibratedMapData(prevData => {
-            const newData = JSON.parse(JSON.stringify(prevData)); // Deep copy
-            const { catIndex, locIndex } = calibrationTargetIndex;
-            newData[catIndex].locations[locIndex].coords = { x: newX, y: newY };
-            return newData;
-        });
+        const { catIndex, locIndex } = calibrationTargetIndex;
+
+        setCalibratedMapData(prevData => prevData.map((cat, cIdx) => {
+            if (cIdx !== catIndex) return cat;
+            return {
+                ...cat,
+                locations: cat.locations.map((loc, lIdx) => {
+                    if (lIdx !== locIndex) return loc;
+                    return { ...loc, coords: { x: newX, y: newY } };
+                })
+            };
+        }));
     
         // Move to next item automatically
-        const { catIndex, locIndex } = calibrationTargetIndex;
         const currentCategory = calibratedMapData[catIndex];
         if (locIndex + 1 < currentCategory.locations.length) {
             setCalibrationTargetIndex({ catIndex, locIndex: locIndex + 1 });
@@ -267,8 +209,7 @@ const App = () => {
         }
     };
 
-
-    const handleMapClick = (loc: any) => {
+    const handleMapClick = useCallback((loc: MapLocation) => {
         if (mode !== 'quiz' || !quizActive || !quizTarget) {
             if (!isCalibrating) {
                 handlePracticeClick(loc);
@@ -276,7 +217,7 @@ const App = () => {
             return;
         }
         engineHandleMapClick(loc);
-    };
+    }, [mode, quizActive, quizTarget, isCalibrating, handlePracticeClick, engineHandleMapClick]);
 
     const handleSummaryClose = () => {
         setIsQuizSummaryOpen(false);
@@ -284,99 +225,16 @@ const App = () => {
     };
 
     const handleSummaryRetry = () => {
-        startQuiz(); 
         setIsQuizSummaryOpen(false);
+        startQuizSession(activeSet.locations);
     };
 
     const handleSummaryNextTopic = () => {
         setIsQuizSummaryOpen(false);
         const nextCatIndex = (activeCatIndex + 1) % calibratedMapData.length;
         setSelectedCategory(calibratedMapData[nextCatIndex].title);
-        // Using setTimeout to wait for state flush before calling startQuiz again
-        setTimeout(() => startQuiz(), 0);
+        setMode('quiz');
     };
-
-    const handleWheel = (e: React.WheelEvent) => {
-        e.preventDefault(); e.stopPropagation();
-        if (!mapRef.current) return;
-        const scaleFactor = 0.0015;
-        const scaleDelta = -e.deltaY * scaleFactor;
-        const newK = Math.min(Math.max(1, viewState.k + scaleDelta), 8);
-        const rect = mapRef.current.getBoundingClientRect();
-        const mouseX = e.clientX - rect.left;
-        const mouseY = e.clientY - rect.top;
-        const newX = mouseX - (mouseX - viewState.x) * (newK / viewState.k);
-        const newY = mouseY - (mouseY - viewState.y) * (newK / viewState.k);
-        setViewState({ k: newK, x: newX, y: newY });
-    };
-
-    const handleMouseDown = (e: React.MouseEvent) => {
-        setIsDragging(true);
-        setDragStart({ x: e.clientX - viewState.x, y: e.clientY - viewState.y });
-    };
-    const handleMouseMove = (e: React.MouseEvent) => {
-        if (!isDragging) return;
-        e.preventDefault();
-        setViewState(prev => ({ ...prev, x: e.clientX - dragStart.x, y: e.clientY - dragStart.y }));
-    };
-    const handleMouseUp = () => setIsDragging(false);
-    
-    const handleTouchStart = (e: React.TouchEvent) => {
-        if (e.touches.length === 1) {
-            setIsDragging(true);
-            const t = e.touches[0];
-            setDragStart({ x: t.clientX - viewState.x, y: t.clientY - viewState.y });
-        } else if (e.touches.length === 2) {
-            setIsDragging(false);
-            const t1 = e.touches[0];
-            const t2 = e.touches[1];
-            const dist = Math.hypot(t1.clientX - t2.clientX, t1.clientY - t2.clientY);
-            
-            if (!mapRef.current) return;
-            const rect = mapRef.current.getBoundingClientRect();
-            const cx = (t1.clientX + t2.clientX) / 2 - rect.left;
-            const cy = (t1.clientY + t2.clientY) / 2 - rect.top;
-
-            gestureRef.current = {
-                startDist: dist,
-                startK: viewState.k,
-                startX: viewState.x,
-                startY: viewState.y,
-                centerX: cx,
-                centerY: cy,
-                isPinching: true
-            };
-        }
-    };
-
-    const handleTouchMove = (e: React.TouchEvent) => {
-        if (e.touches.length === 1 && isDragging) {
-            const t = e.touches[0];
-            setViewState(prev => ({ ...prev, x: t.clientX - dragStart.x, y: t.clientY - dragStart.y }));
-        } else if (e.touches.length === 2 && gestureRef.current.isPinching) {
-            const t1 = e.touches[0];
-            const t2 = e.touches[1];
-            const currDist = Math.hypot(t1.clientX - t2.clientX, t1.clientY - t2.clientY);
-            
-            if (currDist < 10) return;
-
-            const { startDist, startK, startX, startY, centerX, centerY } = gestureRef.current;
-            const scale = currDist / startDist;
-            const newK = Math.min(Math.max(1, startK * scale), 8);
-            
-            const newX = centerX - (centerX - startX) * (newK / startK);
-            const newY = centerY - (centerY - startY) * (newK / startK);
-            
-            setViewState({ k: newK, x: newX, y: newY });
-        }
-    };
-
-    const handleTouchEnd = () => {
-        setIsDragging(false);
-        gestureRef.current.isPinching = false;
-    };
-
-    const sessionScore = points; // Use raw points for better display
 
     const handleShare = () => {
         if (navigator.share) {
@@ -385,7 +243,7 @@ const App = () => {
                 text: 'Practice map pointing for your exams with Naksha!',
                 url: window.location.href,
             }).catch(console.error);
-        } else {
+        } else if (navigator.clipboard) {
             navigator.clipboard.writeText(window.location.href);
             alert('Link copied to clipboard!');
         }
@@ -393,7 +251,7 @@ const App = () => {
 
     return (
         <div className={`app ${currentPage === 'map' ? 'map-view' : ''}`}>
-             {isCalibrating && (
+            {isCalibrating && (
                 <div className="calibration-banner">
                     <i className="fas fa-crosshairs"></i> Calibration Mode Active
                 </div>
@@ -405,22 +263,30 @@ const App = () => {
                     <>
                         <div className="map-section">
                             <div className="controls-bar">
-                                <button className="category-btn" onClick={() => setIsCategoryModalOpen(true)}>
+                                <button 
+                                    className="category-btn" 
+                                    onClick={() => setIsCategoryModalOpen(true)}
+                                    aria-label={`Select category. Currently selected: ${selectedCategory}`}
+                                >
                                     <i className={`fas ${activeSet.icon}`}></i>
                                     <span>{selectedCategory}</span>
                                     <i className="fas fa-chevron-down"></i>
                                 </button>
                                 {!isCalibrating && (
-                                    <div className="mode-switch">
+                                    <div className="mode-switch" role="tablist" aria-label="Learning Mode">
                                         <button 
                                             className={`mode-btn ${mode === 'practice' ? 'active' : ''}`} 
-                                            onClick={() => { setMode('practice'); }}
+                                            onClick={() => setMode('practice')}
+                                            role="tab"
+                                            aria-selected={mode === 'practice'}
                                         >
                                             Practice
                                         </button>
                                         <button 
                                             className={`mode-btn ${mode === 'quiz' ? 'active' : ''}`} 
                                             onClick={startQuiz}
+                                            role="tab"
+                                            aria-selected={mode === 'quiz'}
                                         >
                                             Quiz
                                         </button>
@@ -436,7 +302,7 @@ const App = () => {
                                         </div>
                                     )}
                                     <div className="score-display">
-                                        <i className="fas fa-star" style={{color: '#f59e0b'}}></i> {points}
+                                        <i className="fas fa-star" style={{ color: '#f59e0b' }}></i> {points}
                                         {pointAnimation && (
                                             <div key={pointAnimation.id} className={`point-float ${pointAnimation.val > 0 ? 'pos' : 'neg'}`}>
                                                 {pointAnimation.val > 0 ? '+' : ''}{pointAnimation.val}
@@ -448,31 +314,29 @@ const App = () => {
 
                             <MapControls 
                                 onZoomIn={() => zoomAtCenter(1.2)} 
-                                onZoomOut={() => zoomAtCenter(1/1.2)} 
-                                onReset={() => setViewState({ k: 1, x: 0, y: 0 })} 
+                                onZoomOut={() => zoomAtCenter(1 / 1.2)} 
+                                onReset={resetView} 
                                 onShare={handleShare}
                             />
 
-                            <div className="map-container" 
+                            <div 
+                                className="map-container" 
                                 ref={mapRef}
                                 tabIndex={0}
                                 onKeyDown={handleKeyDown}
-                                onWheel={handleWheel}
                                 onMouseDown={handleMouseDown}
-                                onMouseMove={handleMouseMove}
-                                onMouseUp={handleMouseUp}
-                                onMouseLeave={handleMouseUp}
                                 onTouchStart={handleTouchStart}
                                 onTouchMove={handleTouchMove}
                                 onTouchEnd={handleTouchEnd}
                                 onClick={isCalibrating ? handleCalibrationMapClick : undefined}
-                                style={{cursor: isCalibrating ? 'crosshair' : 'grab', outline: 'none'}}
+                                style={{ cursor: isCalibrating ? 'crosshair' : (isDragging ? 'grabbing' : 'grab'), outline: 'none' }}
+                                aria-label="Interactive Map of India"
                             >
                                 <div style={{ 
                                     transform: `translate(${viewState.x}px, ${viewState.y}px) scale(${viewState.k})`, 
                                     transformOrigin: '0 0',
                                     width: '100%', height: '100%',
-                                    transition: isDragging || gestureRef.current.isPinching ? 'none' : 'transform 0.4s cubic-bezier(0.16, 1, 0.3, 1)'
+                                    transition: isDragging || isPinching ? 'none' : 'transform 0.4s cubic-bezier(0.16, 1, 0.3, 1)'
                                 }}>
                                     <svg className="map-svg" viewBox="0 0 21000 29700" preserveAspectRatio="xMidYMid meet">
                                         <defs>
@@ -496,7 +360,7 @@ const App = () => {
                                             />
                                         )}
 
-                                        {/* Render Markers Layer */}
+                                        {/* Layer 1: Markers */}
                                         <MarkersLayer 
                                             locations={activeSet.locations}
                                             mode={mode}
@@ -510,7 +374,7 @@ const App = () => {
                                             wrongLocation={wrongLocation}
                                             markerScale={markerScale}
                                             handleMapClick={handleMapClick}
-                                            handleMapDoubleClick={(loc: any) => setInfoModalData({ ...loc, icon: activeSet.icon })}
+                                            handleMapDoubleClick={(loc: MapLocation) => setInfoModalData({ ...loc, icon: activeSet.icon })}
                                             setActiveLocationName={setActiveLocationName}
                                         />
 
@@ -522,7 +386,7 @@ const App = () => {
                                             activeLocationName={activeLocationName}
                                             isCalibrating={isCalibrating}
                                             quizFeedback={quizFeedback}
-                                            viewState={viewState}
+                                            isZoomedIn={viewState.k > 2}
                                             labelScale={labelScale}
                                         />
                                     </svg>
@@ -531,7 +395,7 @@ const App = () => {
                                 <CountdownOverlay count={countdownVal} />
 
                                 {quizFeedback !== 'none' && (
-                                    <div className={`feedback-toast ${quizFeedback}`}>
+                                    <div className={`feedback-toast ${quizFeedback}`} role="status" aria-live="polite">
                                         {quizFeedback === 'correct' ? (
                                             <><i className="fas fa-check-circle"></i> Correct!</>
                                         ) : (
@@ -543,9 +407,12 @@ const App = () => {
 
                             {/* Floating Quiz HUD */}
                             {mode === 'quiz' && quizTarget && !countdownVal && !isCalibrating && (
-                                <div className="quiz-hud-floating-v3">
+                                <div className="quiz-hud-floating-v3" role="region" aria-label="Active Quiz Target">
                                     <div className="quiz-hud-progress-bar-v3">
-                                        <div className="quiz-hud-progress-fill-v3" style={{width: `${((currentQuestionIndex + 1) / quizQueue.length) * 100}%`}}></div>
+                                        <div 
+                                            className="quiz-hud-progress-fill-v3" 
+                                            style={{ width: `${((currentQuestionIndex + 1) / Math.max(1, quizQueue.length)) * 100}%` }}
+                                        ></div>
                                     </div>
                                     
                                     <div className="quiz-hud-content-v3">
@@ -567,11 +434,21 @@ const App = () => {
                                                     <strong style={{ fontSize: '0.9rem' }}>{quizTarget.state}</strong>
                                                 </div>
                                             ) : (
-                                                <button className="hud-btn-v3 hint-btn-v3" onClick={handleUseHint} disabled={quizLocked}>
-                                                    <i className="fas fa-lightbulb"></i> Hint <span className="hint-cost-v3">-20</span>
+                                                <button 
+                                                    className="hud-btn-v3 hint-btn-v3" 
+                                                    onClick={handleUseHint} 
+                                                    disabled={quizLocked}
+                                                    aria-label={`Get a hint for ${HINT_COST} points`}
+                                                >
+                                                    <i className="fas fa-lightbulb"></i> Hint <span className="hint-cost-v3">-{HINT_COST}</span>
                                                 </button>
                                             )}
-                                            <button className="hud-btn-v3 skip-btn-v3" onClick={skipQuestion} disabled={quizLocked}>
+                                            <button 
+                                                className="hud-btn-v3 skip-btn-v3" 
+                                                onClick={skipQuestion} 
+                                                disabled={quizLocked}
+                                                aria-label="Skip question"
+                                            >
                                                 Skip <i className="fas fa-forward"></i>
                                             </button>
                                         </div>
@@ -588,7 +465,7 @@ const App = () => {
 
                         {/* Sidebar only for Practice List or Calibration */}
                         {(mode === 'practice' || isCalibrating) && (
-                            <aside className={`floating-sidebar ${isSidebarExpanded ? 'expanded' : ''}`}>
+                            <aside className={`floating-sidebar ${isSidebarExpanded ? 'expanded' : ''}`} aria-label="Locations Sidebar">
                                 <div className="sidebar-header" onClick={() => setIsSidebarExpanded(!isSidebarExpanded)}>
                                     <div className="sidebar-handle-container">
                                         <div className="sidebar-handle"></div>
@@ -598,14 +475,18 @@ const App = () => {
                                             <h2>{isCalibrating ? 'Calibrate' : 'Locations'}</h2>
                                             <span className="sidebar-subtitle">{activeSet.locations.length} items in {selectedCategory}</span>
                                         </div>
-                                        <button className={`sidebar-toggle-btn ${isSidebarExpanded ? 'rotated' : ''}`}>
+                                        <button 
+                                            className={`sidebar-toggle-btn ${isSidebarExpanded ? 'rotated' : ''}`}
+                                            aria-label="Toggle location sidebar"
+                                            aria-expanded={isSidebarExpanded}
+                                        >
                                             <i className="fas fa-chevron-up"></i>
                                         </button>
                                     </div>
                                 </div>
                                 
                                 <div className="sidebar-content">
-                                    <div className="location-list">
+                                    <div className="location-list" role="list">
                                         {activeSet.locations.map((loc, i) => {
                                             const isCalibratingTarget = isCalibrating && calibrationTargetIndex?.catIndex === activeCatIndex && calibrationTargetIndex?.locIndex === i;
                                             return (
@@ -616,6 +497,13 @@ const App = () => {
                                                              setCalibrationTargetIndex({ catIndex: activeCatIndex, locIndex: i });
                                                          } else {
                                                              handlePracticeClick(loc);
+                                                         }
+                                                     }}
+                                                     role="listitem"
+                                                     tabIndex={0}
+                                                     onKeyDown={(e) => {
+                                                         if (e.key === 'Enter' || e.key === ' ') {
+                                                             if (!isCalibrating) handlePracticeClick(loc);
                                                          }
                                                      }}
                                                 >
@@ -637,6 +525,7 @@ const App = () => {
                                                                     setInfoModalData({ ...loc, icon: activeSet.icon }); 
                                                                 }} 
                                                                 title="Show Details"
+                                                                aria-label={`Show details for ${loc.name}`}
                                                             >
                                                                 <i className="fas fa-info-circle"></i>
                                                             </button>
@@ -671,7 +560,7 @@ const App = () => {
             <QuizSummary 
                 isOpen={isQuizSummaryOpen}
                 onClose={handleSummaryClose}
-                score={sessionScore}
+                score={points}
                 total={quizQueue.length}
                 mistakes={quizMistakes}
                 onRetry={handleSummaryRetry}
@@ -685,7 +574,7 @@ const App = () => {
             />
 
             <LocationInfoModal 
-                isOpen={!!infoModalData}
+                isOpen={infoModalData !== null}
                 onClose={() => setInfoModalData(null)}
                 data={infoModalData}
             />
@@ -693,4 +582,7 @@ const App = () => {
     );
 };
 
-ReactDOM.createRoot(document.getElementById('root')!).render(<App />);
+const rootElement = document.getElementById('root');
+if (rootElement) {
+    ReactDOM.createRoot(rootElement).render(<App />);
+}

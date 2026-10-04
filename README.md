@@ -58,12 +58,12 @@ The map operates on a massive coordinate space (`21000 x 29700` units). To ensur
 
 Naksha is built with a modular, state-driven architecture, strictly typed for maximum stability:
 
-*   **`IndiaMap.tsx`**: The core rendering component for the SVG map and its various layers (Borders). Fully memoized to prevent expensive re-renders.
-*   **`index.tsx`**: The orchestrator. Manages UI Overlays, Layers (Labels, Markers), Modals, and high-level coordinate transformations. 
-*   **`useQuizEngine.ts`**: A custom hook managing the complex state of the gamified quiz, including randomization, scoring, combinations, and feedback logic.
-*   **`useMapZoom.ts`**: Handles the mathematical view states (translateX, translateY, scale) for zooming, panning, and touch interactions across the coordinate space.
-*   **`data.ts`**: The central source of truth for all geographic locations, categorized by topics like "Airports" or "Dams".
-*   **`utils.ts`**: Contains pure helper functions for array manipulation and the real-time Web Audio Synthesizer.
+*   **`src/components/IndiaMap.tsx`**: The core rendering component for the SVG map and its various layers (Borders). Fully memoized to prevent expensive re-renders.
+*   **`src/index.tsx`**: The orchestrator. Manages UI Overlays, Layers (Labels, Markers), Modals, and high-level coordinate transformations. 
+*   **`src/hooks/useQuizEngine.ts`**: A custom hook managing the complex state of the gamified quiz, including randomization, scoring, combinations, and feedback logic.
+*   **`src/hooks/useMapZoom.ts`**: Handles the mathematical view states (translateX, translateY, scale) for zooming, panning, and touch interactions across the coordinate space.
+*   **`src/data/data.ts`**: The central source of truth for all geographic locations, categorized by topics like "Airports" or "Dams".
+*   **`src/utils/index.ts`**: Contains pure helper functions for array manipulation and the real-time Web Audio Synthesizer.
 
 ---
 
@@ -71,7 +71,7 @@ Naksha is built with a modular, state-driven architecture, strictly typed for ma
 
 *   **Framework:** React (v18)
 *   **Language:** TypeScript
-*   **Styling:** Tailwind CSS (Utility-first)
+*   **Styling:** Modern Custom CSS (Variables & Glassmorphism System)
 *   **State Management:** React Hooks (useState, useMemo, useCallback)
 *   **Build Engine:** Vite
 

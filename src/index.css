@@ -1248,7 +1248,14 @@ body:has(.calibration-banner) .new-header-container {
     .app.map-view .new-header-mobile-btn { display: flex; }
 
     .map-zoom-controls {
-        display: none;
+        bottom: 5.5rem;
+        right: 0.75rem;
+        gap: 0.35rem;
+    }
+    .map-zoom-controls button {
+        width: 36px;
+        height: 36px;
+        font-size: 0.95rem;
     }
 
     .quiz-score-overlay {

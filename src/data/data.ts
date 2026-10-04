@@ -1,4 +1,4 @@
-import { MapCategory, DownloadItem, Badge } from '../types';
+import { MapCategory, DownloadItem } from '../types';
 
 /**
  * Array of predefined map categories representing the educational syllabus.

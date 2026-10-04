@@ -44,4 +44,13 @@ export interface DownloadItem {
     size: string;
 }
 
-
+/**
+ * Represents an achievement badge.
+ */
+export interface Badge {
+    id: string;
+    name: string;
+    description: string;
+    icon: string;
+    unlockedAt?: number;
+}

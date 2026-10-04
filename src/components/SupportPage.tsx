@@ -2,18 +2,21 @@ import React, { useState } from 'react';
 
 /**
  * Support/Donation page component.
- * Provides UPI payment details and QR code for project support.
+ * Provides UPI payment details and QR code with offline fallback for project support.
  */
-export const SupportPage = () => {
+export const SupportPage: React.FC = () => {
     const upiId = "pradumm@fam";
     const upiLink = `upi://pay?pa=${upiId}&pn=Naksha%20Support&cu=INR`;
     const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&margin=10&data=${encodeURIComponent(upiLink)}`;
     const [copied, setCopied] = useState(false);
+    const [qrFailed, setQrFailed] = useState(false);
 
     const handleCopy = () => {
-        navigator.clipboard.writeText(upiId);
-        setCopied(true);
-        setTimeout(() => setCopied(false), 2000);
+        if (navigator.clipboard) {
+            navigator.clipboard.writeText(upiId);
+            setCopied(true);
+            setTimeout(() => setCopied(false), 2000);
+        }
     };
 
     return (
@@ -32,7 +35,22 @@ export const SupportPage = () => {
                     <div className="support-split">
                         <div className="qr-section">
                             <div className="qr-frame-modern">
-                                <img src={qrUrl} alt="UPI QR Code" className="qr-image" />
+                                {!qrFailed ? (
+                                    <img 
+                                        src={qrUrl} 
+                                        alt="UPI QR Code for donation" 
+                                        className="qr-image" 
+                                        onError={() => setQrFailed(true)}
+                                    />
+                                ) : (
+                                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '240px', padding: '1rem', textAlign: 'center', background: '#f8fafc', borderRadius: '12px' }}>
+                                        <i className="fas fa-qrcode" style={{ fontSize: '3rem', color: 'var(--c-primary)', marginBottom: '0.75rem' }}></i>
+                                        <p style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--c-text-secondary)', marginBottom: '0.5rem' }}>
+                                            Scan using your UPI app
+                                        </p>
+                                        <code style={{ fontSize: '0.9rem', color: 'var(--c-primary)', background: '#e0f2f1', padding: '0.2rem 0.6rem', borderRadius: '6px' }}>{upiId}</code>
+                                    </div>
+                                )}
                                 <div className="qr-scan-line"></div>
                             </div>
                             <p className="scan-text">Scan with any UPI App in India</p>
@@ -49,7 +67,12 @@ export const SupportPage = () => {
                                 <span className="upi-label">My UPI ID</span>
                                 <div className="upi-value-row">
                                     <code className="upi-code-modern">{upiId}</code>
-                                    <button onClick={handleCopy} className={`copy-btn-modern ${copied ? 'copied' : ''}`} title="Copy UPI ID">
+                                    <button 
+                                        onClick={handleCopy} 
+                                        className={`copy-btn-modern ${copied ? 'copied' : ''}`} 
+                                        title="Copy UPI ID"
+                                        aria-label="Copy UPI ID to clipboard"
+                                    >
                                         {copied ? <><i className="fas fa-check"></i> Copied!</> : <><i className="far fa-copy"></i> Copy</>}
                                     </button>
                                 </div>
@@ -60,7 +83,7 @@ export const SupportPage = () => {
                             </a>
 
                             <div className="impact-list-modern">
-                                <h4><i className="fas fa-heart" style={{color: '#e11d48'}}></i> Where does your support go?</h4>
+                                <h4><i className="fas fa-heart" style={{ color: '#e11d48' }}></i> Where does your support go?</h4>
                                 <ul>
                                     <li>
                                         <div className="impact-icon"><i className="fas fa-server"></i></div>

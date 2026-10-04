@@ -1,6 +1,8 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { shuffleArray, playSound } from '../utils';
 import { MapLocation } from '../types';
+
+export const HINT_COST = 20;
 
 /**
  * Custom hook that manages the state and logic for the gamified geography quiz.
@@ -12,40 +14,90 @@ export const useQuizEngine = () => {
     const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
     const [quizTarget, setQuizTarget] = useState<MapLocation | null>(null);
     
-    const [points, setPoints] = useState(() => {
-        const saved = localStorage.getItem('naksha_points');
-        return saved ? parseInt(saved, 10) : 0;
+    const [points, setPoints] = useState<number>(() => {
+        try {
+            const saved = localStorage.getItem('naksha_points');
+            if (saved) {
+                const parsed = parseInt(saved, 10);
+                return Number.isNaN(parsed) ? 0 : Math.max(0, parsed);
+            }
+        } catch (e) {
+            console.warn('Failed to read naksha_points from localStorage', e);
+        }
+        return 0;
     });
-    const [streak, setStreak] = useState(() => {
-        const saved = localStorage.getItem('naksha_streak');
-        return saved ? parseInt(saved, 10) : 0;
+
+    const [streak, setStreak] = useState<number>(() => {
+        try {
+            const saved = localStorage.getItem('naksha_streak');
+            if (saved) {
+                const parsed = parseInt(saved, 10);
+                return Number.isNaN(parsed) ? 0 : Math.max(0, parsed);
+            }
+        } catch (e) {
+            console.warn('Failed to read naksha_streak from localStorage', e);
+        }
+        return 0;
     });
 
     useEffect(() => {
-        localStorage.setItem('naksha_points', points.toString());
-        localStorage.setItem('naksha_streak', streak.toString());
+        try {
+            localStorage.setItem('naksha_points', points.toString());
+            localStorage.setItem('naksha_streak', streak.toString());
+        } catch (e) {
+            console.warn('Failed to save points/streak to localStorage', e);
+        }
     }, [points, streak]);
 
-    const [quizFeedback, setQuizFeedback] = useState<'none'|'correct'|'wrong'>('none');
+    const [quizFeedback, setQuizFeedback] = useState<'none' | 'correct' | 'wrong'>('none');
     const [hintRevealed, setHintRevealed] = useState(false);
     const [quizLocked, setQuizLocked] = useState(false);
     const [quizMistakes, setQuizMistakes] = useState<MapLocation[]>([]);
     const [isQuizSummaryOpen, setIsQuizSummaryOpen] = useState(false);
     const [countdownVal, setCountdownVal] = useState<number | null>(null);
-    const [wrongLocation, setWrongLocation] = useState<{x: number, y: number} | null>(null);
-    const [pointAnimation, setPointAnimation] = useState<{val: number, id: number} | null>(null);
+    const [wrongLocation, setWrongLocation] = useState<{ x: number, y: number } | null>(null);
+    const [pointAnimation, setPointAnimation] = useState<{ val: number, id: number } | null>(null);
+
+    // Timer refs to prevent memory leaks and state updates after teardown
+    const questionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const feedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const pointAnimTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+    const clearAllTimers = useCallback(() => {
+        if (questionTimerRef.current) {
+            clearTimeout(questionTimerRef.current);
+            questionTimerRef.current = null;
+        }
+        if (feedbackTimerRef.current) {
+            clearTimeout(feedbackTimerRef.current);
+            feedbackTimerRef.current = null;
+        }
+        if (pointAnimTimerRef.current) {
+            clearTimeout(pointAnimTimerRef.current);
+            pointAnimTimerRef.current = null;
+        }
+    }, []);
+
+    useEffect(() => {
+        return () => clearAllTimers();
+    }, [clearAllTimers]);
 
     const animatePoints = useCallback((val: number) => {
+        if (pointAnimTimerRef.current) clearTimeout(pointAnimTimerRef.current);
         setPointAnimation({ val, id: Date.now() });
-        setTimeout(() => setPointAnimation(null), 1000);
+        pointAnimTimerRef.current = setTimeout(() => {
+            setPointAnimation(null);
+            pointAnimTimerRef.current = null;
+        }, 1000);
     }, []);
 
     const initQuizSession = useCallback((locations: MapLocation[]) => {
+        clearAllTimers();
         const queue = shuffleArray(locations);
         setQuizQueue(queue);
         setCurrentQuestionIndex(0);
         setQuizMistakes([]);
-        setQuizTarget(queue[0]);
+        setQuizTarget(queue.length > 0 ? queue[0] : null);
         setQuizActive(true); 
         setQuizFeedback('none');
         setHintRevealed(false);
@@ -54,20 +106,22 @@ export const useQuizEngine = () => {
         setStreak(0);
         setWrongLocation(null);
         setCountdownVal(null); 
-    }, []);
+    }, [clearAllTimers]);
 
     const finishQuiz = useCallback(() => {
+        clearAllTimers();
         setQuizActive(false);
         playSound('finish');
         if (quizMistakes.length === 0 && quizQueue.length > 0) {
-            setTimeout(() => {
+            feedbackTimerRef.current = setTimeout(() => {
                 setPoints(p => p + 25);
                 animatePoints(25);
                 playSound('finish');
+                feedbackTimerRef.current = null;
             }, 500);
         }
         setIsQuizSummaryOpen(true);
-    }, [quizMistakes.length, quizQueue.length, animatePoints]);
+    }, [quizMistakes.length, quizQueue.length, animatePoints, clearAllTimers]);
 
     const proceedToNextQuestion = useCallback(() => {
         const nextIdx = currentQuestionIndex + 1;
@@ -98,8 +152,10 @@ export const useQuizEngine = () => {
             setQuizFeedback('correct');
             setQuizLocked(true);
             
-            setTimeout(() => {
+            if (questionTimerRef.current) clearTimeout(questionTimerRef.current);
+            questionTimerRef.current = setTimeout(() => {
                 proceedToNextQuestion();
+                questionTimerRef.current = null;
             }, 1500);
             return true;
         } else {
@@ -117,8 +173,10 @@ export const useQuizEngine = () => {
                 return prev;
             });
             
-            setTimeout(() => {
+            if (questionTimerRef.current) clearTimeout(questionTimerRef.current);
+            questionTimerRef.current = setTimeout(() => {
                 proceedToNextQuestion();
+                questionTimerRef.current = null;
             }, 2500);
             return false;
         }
@@ -127,19 +185,25 @@ export const useQuizEngine = () => {
     const handleUseHint = useCallback(() => {
         if (hintRevealed || quizLocked) return;
         setHintRevealed(true);
-        setPoints(p => Math.max(0, p - 5));
-        animatePoints(-5);
+        setPoints(p => Math.max(0, p - HINT_COST));
+        animatePoints(-HINT_COST);
         playSound('click');
     }, [hintRevealed, quizLocked, animatePoints]);
 
     const skipQuestion = useCallback(() => {
         if (quizLocked || !quizTarget) return;
-        setQuizMistakes(prev => [...prev, quizTarget]);
+        setQuizMistakes(prev => {
+            if (!prev.some(m => m.name === quizTarget.name)) {
+                return [...prev, quizTarget];
+            }
+            return prev;
+        });
         setStreak(0);
         proceedToNextQuestion();
     }, [quizLocked, quizTarget, proceedToNextQuestion]);
 
     const resetQuizState = useCallback(() => {
+        clearAllTimers();
         setQuizActive(false);
         setQuizTarget(null);
         setQuizFeedback('none');
@@ -148,12 +212,13 @@ export const useQuizEngine = () => {
         setStreak(0);
         setCountdownVal(null);
         setWrongLocation(null);
-    }, []);
+    }, [clearAllTimers]);
 
     return {
         quizActive, setQuizActive, quizQueue, currentQuestionIndex, quizTarget, points, setPoints,
         quizFeedback, hintRevealed, quizLocked, quizMistakes, isQuizSummaryOpen, setIsQuizSummaryOpen,
         streak, countdownVal, setCountdownVal, wrongLocation, pointAnimation, setPointAnimation,
-        initQuizSession, finishQuiz, proceedToNextQuestion, handleMapClick, handleUseHint, skipQuestion, resetQuizState
+        initQuizSession, finishQuiz, proceedToNextQuestion, handleMapClick, handleUseHint, skipQuestion, resetQuizState,
+        animatePoints
     };
 };

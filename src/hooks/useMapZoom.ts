@@ -1,4 +1,10 @@
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useState, useRef, useCallback, useEffect } from 'react';
+
+export interface ViewState {
+    k: number;
+    x: number;
+    y: number;
+}
 
 /**
  * Custom hook to manage the zooming, panning, and interaction state of the interactive map.
@@ -6,13 +12,20 @@ import React, { useState, useRef, useCallback } from 'react';
  * methods for zooming to specific locations or resetting the view.
  *
  * @param {React.RefObject<HTMLDivElement>} mapRef - Reference to the map container element
- * @returns {object} Map zoom state and interaction handlers
+ * @returns Map zoom state and interaction handlers
  */
 export const useMapZoom = (mapRef: React.RefObject<HTMLDivElement>) => {
-    const [viewState, setViewState] = useState({ k: 1, x: 0, y: 0 });
+    const [viewState, setViewState] = useState<ViewState>({ k: 1, x: 0, y: 0 });
     const [isDragging, setIsDragging] = useState(false);
-    const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
-    
+
+    // Keep state ref to avoid stale closures in window event listeners
+    const viewStateRef = useRef(viewState);
+    viewStateRef.current = viewState;
+
+    const dragStartRef = useRef({ x: 0, y: 0 });
+    const isDraggingRef = useRef(false);
+    const rAFRef = useRef<number | null>(null);
+
     const gestureRef = useRef({
         startDist: 0,
         startK: 1,
@@ -64,39 +77,87 @@ export const useMapZoom = (mapRef: React.RefObject<HTMLDivElement>) => {
         setViewState({ k: 1, x: 0, y: 0 });
     }, []);
 
-    const handleWheel = useCallback((e: React.WheelEvent) => {
-        e.preventDefault(); e.stopPropagation();
-        if (!mapRef.current) return;
-        const scaleFactor = 0.0015;
-        const scaleDelta = -e.deltaY * scaleFactor;
-        const newK = Math.min(Math.max(1, viewState.k + scaleDelta), 8);
-        const rect = mapRef.current.getBoundingClientRect();
-        const mouseX = e.clientX - rect.left;
-        const mouseY = e.clientY - rect.top;
-        const newX = mouseX - (mouseX - viewState.x) * (newK / viewState.k);
-        const newY = mouseY - (mouseY - viewState.y) * (newK / viewState.k);
-        setViewState({ k: newK, x: newX, y: newY });
-    }, [mapRef, viewState]);
+    // Native non-passive wheel event listener on container to prevent passive violation errors
+    useEffect(() => {
+        const el = mapRef.current;
+        if (!el) return;
+
+        const onWheel = (e: WheelEvent) => {
+            e.preventDefault();
+            e.stopPropagation();
+
+            const scaleFactor = 0.0015;
+            const scaleDelta = -e.deltaY * scaleFactor;
+            const current = viewStateRef.current;
+            const newK = Math.min(Math.max(1, current.k + scaleDelta), 8);
+            const rect = el.getBoundingClientRect();
+            const mouseX = e.clientX - rect.left;
+            const mouseY = e.clientY - rect.top;
+            const newX = mouseX - (mouseX - current.x) * (newK / current.k);
+            const newY = mouseY - (mouseY - current.y) * (newK / current.k);
+
+            setViewState({ k: newK, x: newX, y: newY });
+        };
+
+        el.addEventListener('wheel', onWheel, { passive: false });
+        return () => {
+            el.removeEventListener('wheel', onWheel);
+        };
+    }, [mapRef]);
+
+    // Window mouse move & up listeners to allow dragging outside container boundaries smoothly
+    useEffect(() => {
+        const onMouseMove = (e: MouseEvent) => {
+            if (!isDraggingRef.current) return;
+            e.preventDefault();
+
+            if (rAFRef.current !== null) cancelAnimationFrame(rAFRef.current);
+            rAFRef.current = requestAnimationFrame(() => {
+                const newX = e.clientX - dragStartRef.current.x;
+                const newY = e.clientY - dragStartRef.current.y;
+                setViewState(prev => ({ ...prev, x: newX, y: newY }));
+            });
+        };
+
+        const onMouseUp = () => {
+            if (isDraggingRef.current) {
+                isDraggingRef.current = false;
+                setIsDragging(false);
+            }
+        };
+
+        window.addEventListener('mousemove', onMouseMove);
+        window.addEventListener('mouseup', onMouseUp);
+
+        return () => {
+            window.removeEventListener('mousemove', onMouseMove);
+            window.removeEventListener('mouseup', onMouseUp);
+            if (rAFRef.current !== null) cancelAnimationFrame(rAFRef.current);
+        };
+    }, []);
 
     const handleMouseDown = useCallback((e: React.MouseEvent) => {
+        // Only trigger on primary button
+        if (e.button !== 0) return;
+        isDraggingRef.current = true;
         setIsDragging(true);
-        setDragStart({ x: e.clientX - viewState.x, y: e.clientY - viewState.y });
-    }, [viewState]);
+        dragStartRef.current = {
+            x: e.clientX - viewStateRef.current.x,
+            y: e.clientY - viewStateRef.current.y
+        };
+    }, []);
 
-    const handleMouseMove = useCallback((e: React.MouseEvent) => {
-        if (!isDragging) return;
-        e.preventDefault();
-        setViewState(prev => ({ ...prev, x: e.clientX - dragStart.x, y: e.clientY - dragStart.y }));
-    }, [isDragging, dragStart]);
-
-    const handleMouseUp = useCallback(() => setIsDragging(false), []);
-    
     const handleTouchStart = useCallback((e: React.TouchEvent) => {
         if (e.touches.length === 1) {
+            isDraggingRef.current = true;
             setIsDragging(true);
             const t = e.touches[0];
-            setDragStart({ x: t.clientX - viewState.x, y: t.clientY - viewState.y });
+            dragStartRef.current = {
+                x: t.clientX - viewStateRef.current.x,
+                y: t.clientY - viewStateRef.current.y
+            };
         } else if (e.touches.length === 2) {
+            isDraggingRef.current = false;
             setIsDragging(false);
             const t1 = e.touches[0];
             const t2 = e.touches[1];
@@ -109,20 +170,24 @@ export const useMapZoom = (mapRef: React.RefObject<HTMLDivElement>) => {
 
             gestureRef.current = {
                 startDist: dist,
-                startK: viewState.k,
-                startX: viewState.x,
-                startY: viewState.y,
+                startK: viewStateRef.current.k,
+                startX: viewStateRef.current.x,
+                startY: viewStateRef.current.y,
                 centerX: cx,
                 centerY: cy,
                 isPinching: true
             };
         }
-    }, [mapRef, viewState]);
+    }, [mapRef]);
 
     const handleTouchMove = useCallback((e: React.TouchEvent) => {
-        if (e.touches.length === 1 && isDragging) {
+        if (e.touches.length === 1 && isDraggingRef.current) {
             const t = e.touches[0];
-            setViewState(prev => ({ ...prev, x: t.clientX - dragStart.x, y: t.clientY - dragStart.y }));
+            setViewState(prev => ({
+                ...prev,
+                x: t.clientX - dragStartRef.current.x,
+                y: t.clientY - dragStartRef.current.y
+            }));
         } else if (e.touches.length === 2 && gestureRef.current.isPinching) {
             const t1 = e.touches[0];
             const t2 = e.touches[1];
@@ -139,18 +204,48 @@ export const useMapZoom = (mapRef: React.RefObject<HTMLDivElement>) => {
             
             setViewState({ k: newK, x: newX, y: newY });
         }
-    }, [isDragging, dragStart]);
-
-    const handleTouchEnd = useCallback(() => {
-        setIsDragging(false);
-        gestureRef.current.isPinching = false;
     }, []);
 
+    const handleTouchEnd = useCallback((e: React.TouchEvent) => {
+        if (e.touches.length === 0) {
+            isDraggingRef.current = false;
+            setIsDragging(false);
+            gestureRef.current.isPinching = false;
+        } else if (e.touches.length === 1) {
+            // Smoothly transition from pinch to 1-finger drag
+            gestureRef.current.isPinching = false;
+            isDraggingRef.current = true;
+            setIsDragging(true);
+            const t = e.touches[0];
+            dragStartRef.current = {
+                x: t.clientX - viewStateRef.current.x,
+                y: t.clientY - viewStateRef.current.y
+            };
+        }
+    }, []);
+
+    const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+        const step = 50; 
+        if (e.key === 'ArrowUp') setViewState(v => ({ ...v, y: v.y + step }));
+        if (e.key === 'ArrowDown') setViewState(v => ({ ...v, y: v.y - step }));
+        if (e.key === 'ArrowLeft') setViewState(v => ({ ...v, x: v.x + step }));
+        if (e.key === 'ArrowRight') setViewState(v => ({ ...v, x: v.x - step }));
+        if (e.key === '=' || e.key === '+') zoomAtCenter(1.2);
+        if (e.key === '-' || e.key === '_') zoomAtCenter(1 / 1.2);
+    }, [zoomAtCenter]);
+
     return {
-        viewState, setViewState,
+        viewState,
+        setViewState,
         isDragging,
-        zoomToLocation, zoomAtCenter, resetView,
-        handleWheel, handleMouseDown, handleMouseMove, handleMouseUp,
-        handleTouchStart, handleTouchMove, handleTouchEnd
+        zoomToLocation,
+        zoomAtCenter,
+        resetView,
+        handleMouseDown,
+        handleTouchStart,
+        handleTouchMove,
+        handleTouchEnd,
+        handleKeyDown,
+        isPinching: gestureRef.current.isPinching
     };
 };

@@ -27,7 +27,7 @@ export const getAudioCtx = (): AudioContext => {
 
 /**
  * Synthesizes and plays a procedural sound effect using Web Audio API.
- * No external audio files required.
+ * No external audio files required. Disconnects nodes upon completion.
  * @param type The type of sound to play
  */
 export const playSound = (type: 'correct' | 'wrong' | 'click' | 'badge' | 'finish' | 'tick') => {
@@ -43,6 +43,16 @@ export const playSound = (type: 'correct' | 'wrong' | 'click' | 'badge' | 'finis
         gainNode.connect(ctx.destination);
 
         const now = ctx.currentTime;
+
+        // Clean up audio graph nodes once playback finishes
+        osc.onended = () => {
+            try {
+                osc.disconnect();
+                gainNode.disconnect();
+            } catch {
+                // Ignore disconnect errors if already torn down
+            }
+        };
 
         if (type === 'correct') {
             osc.type = 'sine';
