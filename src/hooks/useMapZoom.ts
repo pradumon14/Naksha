@@ -23,6 +23,8 @@ export const useMapZoom = (mapRef: React.RefObject<HTMLDivElement>) => {
     viewStateRef.current = viewState;
 
     const dragStartRef = useRef({ x: 0, y: 0 });
+    const mouseDownPosRef = useRef({ x: 0, y: 0 });
+    const dragDistanceRef = useRef(0);
     const isDraggingRef = useRef(false);
     const rAFRef = useRef<number | null>(null);
 
@@ -111,6 +113,11 @@ export const useMapZoom = (mapRef: React.RefObject<HTMLDivElement>) => {
             if (!isDraggingRef.current) return;
             e.preventDefault();
 
+            dragDistanceRef.current = Math.hypot(
+                e.clientX - mouseDownPosRef.current.x,
+                e.clientY - mouseDownPosRef.current.y
+            );
+
             if (rAFRef.current !== null) cancelAnimationFrame(rAFRef.current);
             rAFRef.current = requestAnimationFrame(() => {
                 const newX = e.clientX - dragStartRef.current.x;
@@ -141,6 +148,8 @@ export const useMapZoom = (mapRef: React.RefObject<HTMLDivElement>) => {
         if (e.button !== 0) return;
         isDraggingRef.current = true;
         setIsDragging(true);
+        mouseDownPosRef.current = { x: e.clientX, y: e.clientY };
+        dragDistanceRef.current = 0;
         dragStartRef.current = {
             x: e.clientX - viewStateRef.current.x,
             y: e.clientY - viewStateRef.current.y
@@ -225,6 +234,7 @@ export const useMapZoom = (mapRef: React.RefObject<HTMLDivElement>) => {
     }, []);
 
     const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+        if (e.defaultPrevented) return;
         const step = 50; 
         if (e.key === 'ArrowUp') setViewState(v => ({ ...v, y: v.y + step }));
         if (e.key === 'ArrowDown') setViewState(v => ({ ...v, y: v.y - step }));
@@ -238,6 +248,7 @@ export const useMapZoom = (mapRef: React.RefObject<HTMLDivElement>) => {
         viewState,
         setViewState,
         isDragging,
+        hasDragged: () => dragDistanceRef.current > 6,
         zoomToLocation,
         zoomAtCenter,
         resetView,

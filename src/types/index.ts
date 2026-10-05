@@ -30,18 +30,26 @@ export interface MapCategory {
     icon: string;
     /** List of locations in this category */
     locations: MapLocation[];
+    /** Syllabus / Theme group */
+    theme?: 'energy' | 'industry' | 'water' | 'history' | 'general';
 }
 
 /**
  * Represents a downloadable resource.
  */
 export interface DownloadItem {
+    id?: string;
     title: string;
     description: string;
     downloadUrl: string;
     type: string;
     icon: string;
     size: string;
+    category?: 'syllabus' | 'outlines' | 'physical' | 'history';
+    tags?: string[];
+    isAvailable?: boolean;
+    format?: string;
+    resolution?: string;
 }
 
 /**

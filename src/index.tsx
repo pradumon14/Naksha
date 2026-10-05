@@ -14,11 +14,18 @@ import { MarkersLayer, LabelsLayer } from './components/MapLayers';
 import { 
     DownloadsPage, 
     CategoryModal, 
-    CalibrationExportModal, 
     QuizSummary, 
     CountdownOverlay 
 } from './components/SharedComponents';
-import { MapLocation } from './types';
+import { 
+    CalibFloatingToolbar, 
+    CalibInspectorCard, 
+    CursorCoordsBadge, 
+    AddPinBanner, 
+    StudioExportImportModal,
+    MobileCalibSuite
+} from './components/DevTools';
+import { MapCategory, MapLocation } from './types';
 
 const App: React.FC = () => {
     // Navigation State
@@ -42,6 +49,7 @@ const App: React.FC = () => {
         viewState,
         setViewState,
         isDragging,
+        hasDragged,
         zoomToLocation,
         zoomAtCenter,
         resetView,
@@ -57,7 +65,7 @@ const App: React.FC = () => {
     const {
         quizActive, setQuizActive, quizQueue, currentQuestionIndex, quizTarget, points,
         quizFeedback, hintRevealed, quizLocked, quizMistakes, isQuizSummaryOpen, setIsQuizSummaryOpen,
-        streak, countdownVal, setCountdownVal, wrongLocation, pointAnimation,
+        streak, countdownVal, setCountdownVal, wrongLocation, lastClickedLocation, pointAnimation,
         initQuizSession, proceedToNextQuestion, handleMapClick: engineHandleMapClick,
         handleUseHint, skipQuestion, resetQuizState
     } = useQuizEngine();
@@ -66,19 +74,67 @@ const App: React.FC = () => {
     const [activeLocationName, setActiveLocationName] = useState<string | null>(null);
     const [isSidebarExpanded, setIsSidebarExpanded] = useState(false); 
 
-    // Calibration State
+    // Calibration Mode State with LocalStorage Autosave
     const [isCalibrating, setIsCalibrating] = useState(false);
-    const [calibratedMapData, setCalibratedMapData] = useState(mapData);
+    const [calibratedMapData, setCalibratedMapData] = useState<MapCategory[]>(() => {
+        try {
+            const saved = localStorage.getItem('naksha_custom_map_data');
+            if (saved) {
+                const parsed = JSON.parse(saved);
+                if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+            }
+        } catch (e) {}
+        return mapData;
+    });
     const [calibrationTargetIndex, setCalibrationTargetIndex] = useState<{ catIndex: number; locIndex: number } | null>(null);
     const [isExportModalOpen, setIsExportModalOpen] = useState(false);
+    const [isAddingPin, setIsAddingPin] = useState(false);
+    const [nudgeStep, setNudgeStep] = useState(10);
+    const [hoverSvgCoords, setHoverSvgCoords] = useState<{ x: number; y: number } | null>(null);
+
+    // Save to localStorage whenever calibratedMapData changes
+    useEffect(() => {
+        try {
+            localStorage.setItem('naksha_custom_map_data', JSON.stringify(calibratedMapData));
+        } catch (e) {}
+    }, [calibratedMapData]);
+
+    // Simple Undo/Redo History
+    const [history, setHistory] = useState<MapCategory[][]>(() => [calibratedMapData]);
+    const [historyIndex, setHistoryIndex] = useState<number>(0);
+
+    const updateMapDataWithHistory = useCallback((newData: MapCategory[]) => {
+        setCalibratedMapData(newData);
+        setHistory(prev => {
+            const next = prev.slice(0, historyIndex + 1);
+            return [...next, newData];
+        });
+        setHistoryIndex(prev => prev + 1);
+    }, [historyIndex]);
+
+    const handleUndo = useCallback(() => {
+        if (historyIndex > 0) {
+            const nextIdx = historyIndex - 1;
+            setHistoryIndex(nextIdx);
+            setCalibratedMapData(history[nextIdx]);
+        }
+    }, [historyIndex, history]);
+
+    const handleRedo = useCallback(() => {
+        if (historyIndex < history.length - 1) {
+            const nextIdx = historyIndex + 1;
+            setHistoryIndex(nextIdx);
+            setCalibratedMapData(history[nextIdx]);
+        }
+    }, [historyIndex, history]);
 
     // Info Modal State
     const [infoModalData, setInfoModalData] = useState<(MapLocation & { icon?: string }) | null>(null);
     
-    // Check for calibration mode on mount
+    // Check for calibration / dev mode on mount via URL
     useEffect(() => {
         const urlParams = new URLSearchParams(window.location.search);
-        if (urlParams.get('calibrate') === 'true') {
+        if (urlParams.get('calibrate') === 'true' || urlParams.get('dev') === 'true') {
             setIsCalibrating(true);
             setMode('practice');
         }
@@ -170,10 +226,11 @@ const App: React.FC = () => {
     
     /**
      * Handles map clicks specifically for calibration mode.
-     * Updates the coordinates of the currently targeted location without heavy JSON clone.
+     * Prevents clicks during map drag/pan and updates coordinates with history tracking.
      */
     const handleCalibrationMapClick = (e: React.MouseEvent) => {
-        if (!isCalibrating || !calibrationTargetIndex || !mapRef.current) return;
+        if (!isCalibrating || !mapRef.current) return;
+        if (hasDragged()) return; // Ignore map pan drags
     
         const svg = mapRef.current.querySelector('svg');
         if (!svg) return;
@@ -183,13 +240,210 @@ const App: React.FC = () => {
         pt.y = e.clientY;
     
         const svgP = pt.matrixTransform(svg.getScreenCTM()!.inverse());
-    
         const newX = Math.round(svgP.x);
         const newY = Math.round(svgP.y);
-    
+
+        // Add Pin Mode
+        if (isAddingPin) {
+            const currentCat = calibratedMapData[activeCatIndex] || calibratedMapData[0];
+            const newPin: MapLocation = {
+                name: `Location ${currentCat.locations.length + 1}`,
+                state: 'India',
+                coords: { x: newX, y: newY },
+                description: 'Enter syllabus notes or description here.'
+            };
+            const updated = calibratedMapData.map((cat, cIdx) => {
+                if (cIdx !== activeCatIndex) return cat;
+                return {
+                    ...cat,
+                    locations: [...cat.locations, newPin]
+                };
+            });
+            updateMapDataWithHistory(updated);
+            setCalibrationTargetIndex({ catIndex: activeCatIndex, locIndex: currentCat.locations.length });
+            setIsAddingPin(false);
+            setIsSidebarExpanded(true);
+            return;
+        }
+
+        // Relocate Selected Pin
+        if (calibrationTargetIndex) {
+            const { catIndex, locIndex } = calibrationTargetIndex;
+            const updated = calibratedMapData.map((cat, cIdx) => {
+                if (cIdx !== catIndex) return cat;
+                return {
+                    ...cat,
+                    locations: cat.locations.map((loc, lIdx) => {
+                        if (lIdx !== locIndex) return loc;
+                        return { ...loc, coords: { x: newX, y: newY } };
+                    })
+                };
+            });
+            updateMapDataWithHistory(updated);
+        }
+    };
+
+    /**
+     * Marker Dragging in Calibration Mode
+     */
+    const draggingMarkerRef = useRef<{ catIndex: number; locIndex: number } | null>(null);
+
+    const handleMarkerClick = useCallback((loc: MapLocation, locIndex?: number) => {
+        if (isCalibrating) {
+            if (locIndex !== undefined) {
+                setCalibrationTargetIndex({ catIndex: activeCatIndex, locIndex });
+            }
+            return;
+        }
+        if (mode !== 'quiz' || !quizActive || !quizTarget) {
+            handlePracticeClick(loc);
+            return;
+        }
+        engineHandleMapClick(loc);
+    }, [mode, quizActive, quizTarget, isCalibrating, activeCatIndex, handlePracticeClick, engineHandleMapClick]);
+
+    const handleMarkerDragStart = useCallback((locIndex: number, e: React.MouseEvent) => {
+        if (!isCalibrating) return;
+        setCalibrationTargetIndex({ catIndex: activeCatIndex, locIndex });
+        draggingMarkerRef.current = { catIndex: activeCatIndex, locIndex };
+    }, [isCalibrating, activeCatIndex]);
+
+    const handleMouseMoveOnMap = (e: React.MouseEvent) => {
+        if (!isCalibrating || !mapRef.current) return;
+        const svg = mapRef.current.querySelector('svg');
+        if (!svg) return;
+        const pt = svg.createSVGPoint();
+        pt.x = e.clientX;
+        pt.y = e.clientY;
+        const svgP = pt.matrixTransform(svg.getScreenCTM()!.inverse());
+        const curX = Math.round(svgP.x);
+        const curY = Math.round(svgP.y);
+        setHoverSvgCoords({ x: curX, y: curY });
+
+        if (draggingMarkerRef.current) {
+            const { catIndex, locIndex } = draggingMarkerRef.current;
+            setCalibratedMapData(prevData => prevData.map((cat, cIdx) => {
+                if (cIdx !== catIndex) return cat;
+                return {
+                    ...cat,
+                    locations: cat.locations.map((loc, lIdx) => {
+                        if (lIdx !== locIndex) return loc;
+                        return { ...loc, coords: { x: curX, y: curY } };
+                    })
+                };
+            }));
+        }
+    };
+
+    useEffect(() => {
+        const handleGlobalMouseUp = () => {
+            if (draggingMarkerRef.current) {
+                draggingMarkerRef.current = null;
+                updateMapDataWithHistory(calibratedMapData);
+            }
+        };
+        window.addEventListener('mouseup', handleGlobalMouseUp);
+        return () => window.removeEventListener('mouseup', handleGlobalMouseUp);
+    }, [calibratedMapData, updateMapDataWithHistory]);
+
+    const handleUpdateSelectedLocation = useCallback((updated: Partial<MapLocation>) => {
+        if (!calibrationTargetIndex) return;
         const { catIndex, locIndex } = calibrationTargetIndex;
 
-        setCalibratedMapData(prevData => prevData.map((cat, cIdx) => {
+        const updatedData = calibratedMapData.map((cat, cIdx) => {
+            if (cIdx !== catIndex) return cat;
+            return {
+                ...cat,
+                locations: cat.locations.map((loc, lIdx) => {
+                    if (lIdx !== locIndex) return loc;
+                    return { ...loc, ...updated };
+                })
+            };
+        });
+        updateMapDataWithHistory(updatedData);
+    }, [calibrationTargetIndex, calibratedMapData, updateMapDataWithHistory]);
+
+    const handleDeleteSelectedLocation = useCallback(() => {
+        if (!calibrationTargetIndex) return;
+        const { catIndex, locIndex } = calibrationTargetIndex;
+        const currentCat = calibratedMapData[catIndex];
+        if (!currentCat) return;
+
+        const updatedData = calibratedMapData.map((cat, cIdx) => {
+            if (cIdx !== catIndex) return cat;
+            return {
+                ...cat,
+                locations: cat.locations.filter((_, lIdx) => lIdx !== locIndex)
+            };
+        });
+        updateMapDataWithHistory(updatedData);
+        setCalibrationTargetIndex(null);
+    }, [calibrationTargetIndex, calibratedMapData, updateMapDataWithHistory]);
+
+    const handleDuplicateSelectedLocation = useCallback(() => {
+        if (!calibrationTargetIndex) return;
+        const { catIndex, locIndex } = calibrationTargetIndex;
+        const currentLoc = calibratedMapData[catIndex]?.locations[locIndex];
+        if (!currentLoc) return;
+
+        const duplicated: MapLocation = {
+            ...currentLoc,
+            name: `${currentLoc.name} (Copy)`,
+            coords: {
+                x: Math.min(21000, currentLoc.coords.x + 250),
+                y: Math.min(29700, currentLoc.coords.y + 250)
+            }
+        };
+
+        const updatedData = calibratedMapData.map((cat, cIdx) => {
+            if (cIdx !== catIndex) return cat;
+            return {
+                ...cat,
+                locations: [...cat.locations, duplicated]
+            };
+        });
+        updateMapDataWithHistory(updatedData);
+        setCalibrationTargetIndex({ catIndex, locIndex: calibratedMapData[catIndex].locations.length });
+    }, [calibrationTargetIndex, calibratedMapData, updateMapDataWithHistory]);
+
+    const handleSelectCategoryIndex = useCallback((idx: number) => {
+        if (idx >= 0 && idx < calibratedMapData.length) {
+            setSelectedCategory(calibratedMapData[idx].title);
+            setCalibrationTargetIndex(null);
+        }
+    }, [calibratedMapData]);
+
+    const handleResetData = useCallback(() => {
+        if (window.confirm("Reset all locations to original syllabus dataset? Any custom additions or edits will be restored to defaults.")) {
+            try {
+                localStorage.removeItem('naksha_custom_map_data');
+            } catch (e) {}
+            updateMapDataWithHistory(mapData);
+            setCalibrationTargetIndex(null);
+        }
+    }, [updateMapDataWithHistory]);
+
+    const handleImportData = useCallback((imported: MapCategory[]) => {
+        updateMapDataWithHistory(imported);
+        if (imported.length > 0) {
+            setSelectedCategory(imported[0].title);
+        }
+        setCalibrationTargetIndex(null);
+    }, [updateMapDataWithHistory]);
+
+    /**
+     * Nudge selected location by dx, dy
+     */
+    const handleNudgeLocation = useCallback((dx: number, dy: number) => {
+        if (!calibrationTargetIndex) return;
+        const { catIndex, locIndex } = calibrationTargetIndex;
+        const currentLoc = calibratedMapData[catIndex]?.locations[locIndex];
+        if (!currentLoc) return;
+
+        const newX = Math.max(0, Math.min(21000, currentLoc.coords.x + dx));
+        const newY = Math.max(0, Math.min(29700, currentLoc.coords.y + dy));
+
+        const updated = calibratedMapData.map((cat, cIdx) => {
             if (cIdx !== catIndex) return cat;
             return {
                 ...cat,
@@ -198,26 +452,163 @@ const App: React.FC = () => {
                     return { ...loc, coords: { x: newX, y: newY } };
                 })
             };
-        }));
-    
-        // Move to next item automatically
-        const currentCategory = calibratedMapData[catIndex];
-        if (locIndex + 1 < currentCategory.locations.length) {
-            setCalibrationTargetIndex({ catIndex, locIndex: locIndex + 1 });
-        } else {
-            setCalibrationTargetIndex(null); // End of list
-        }
-    };
+        });
+        updateMapDataWithHistory(updated);
+    }, [calibrationTargetIndex, calibratedMapData, updateMapDataWithHistory]);
 
-    const handleMapClick = useCallback((loc: MapLocation) => {
-        if (mode !== 'quiz' || !quizActive || !quizTarget) {
-            if (!isCalibrating) {
-                handlePracticeClick(loc);
-            }
+    const handlePreviousLocation = useCallback(() => {
+        if (!calibrationTargetIndex) {
+            setCalibrationTargetIndex({ catIndex: activeCatIndex, locIndex: 0 });
             return;
         }
-        engineHandleMapClick(loc);
-    }, [mode, quizActive, quizTarget, isCalibrating, handlePracticeClick, engineHandleMapClick]);
+        const { locIndex } = calibrationTargetIndex;
+        if (locIndex > 0) {
+            setCalibrationTargetIndex({ catIndex: activeCatIndex, locIndex: locIndex - 1 });
+        }
+    }, [calibrationTargetIndex, activeCatIndex]);
+
+    const handleNextLocation = useCallback(() => {
+        const cat = calibratedMapData[activeCatIndex];
+        if (!cat) return;
+        if (!calibrationTargetIndex) {
+            setCalibrationTargetIndex({ catIndex: activeCatIndex, locIndex: 0 });
+            return;
+        }
+        const { locIndex } = calibrationTargetIndex;
+        if (locIndex < cat.locations.length - 1) {
+            setCalibrationTargetIndex({ catIndex: activeCatIndex, locIndex: locIndex + 1 });
+        }
+    }, [calibrationTargetIndex, activeCatIndex, calibratedMapData]);
+
+    const handleCenterSelectedLocation = useCallback(() => {
+        if (!calibrationTargetIndex) return;
+        const { catIndex, locIndex } = calibrationTargetIndex;
+        const loc = calibratedMapData[catIndex]?.locations[locIndex];
+        if (loc) {
+            zoomToLocation(loc.coords.x, loc.coords.y);
+        }
+    }, [calibrationTargetIndex, calibratedMapData, zoomToLocation]);
+
+    /**
+     * Clean global keyboard shortcuts for calibration
+     */
+    useEffect(() => {
+        const handleKeyDownGlobal = (e: KeyboardEvent) => {
+            const tag = (e.target as HTMLElement)?.tagName?.toLowerCase();
+            if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+
+            // Alt+C to toggle calibration mode
+            if (e.altKey && (e.key === 'c' || e.key === 'C')) {
+                e.preventDefault();
+                setIsCalibrating(prev => {
+                    const next = !prev;
+                    if (next) setIsSidebarExpanded(true);
+                    return next;
+                });
+                return;
+            }
+
+            if (!isCalibrating) return;
+
+            // Arrow keys for nudging target
+            if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
+                if (calibrationTargetIndex) {
+                    e.preventDefault();
+                    const step = e.altKey ? 1 : e.shiftKey ? 50 : nudgeStep;
+                    const dx = e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0;
+                    const dy = e.key === 'ArrowUp' ? -step : e.key === 'ArrowDown' ? step : 0;
+                    handleNudgeLocation(dx, dy);
+                }
+                return;
+            }
+
+            // [ and ] for previous / next location
+            if (e.key === '[') {
+                e.preventDefault();
+                handlePreviousLocation();
+                return;
+            }
+            if (e.key === ']') {
+                e.preventDefault();
+                handleNextLocation();
+                return;
+            }
+
+            // Space to center on target
+            if (e.key === ' ') {
+                if (calibrationTargetIndex) {
+                    e.preventDefault();
+                    handleCenterSelectedLocation();
+                }
+                return;
+            }
+
+            // Ctrl+Z Undo
+            if (e.ctrlKey && !e.shiftKey && (e.key === 'z' || e.key === 'Z')) {
+                e.preventDefault();
+                handleUndo();
+                return;
+            }
+
+            // Ctrl+Y or Ctrl+Shift+Z Redo
+            if ((e.ctrlKey && (e.key === 'y' || e.key === 'Y')) || (e.ctrlKey && e.shiftKey && (e.key === 'z' || e.key === 'Z'))) {
+                e.preventDefault();
+                handleRedo();
+                return;
+            }
+
+            // N or A to toggle Add Pin mode
+            if (e.key === 'n' || e.key === 'N' || e.key === 'a' || e.key === 'A') {
+                e.preventDefault();
+                setIsAddingPin(prev => !prev);
+                return;
+            }
+
+            // Delete or Backspace to delete selected pin
+            if (e.key === 'Delete' || e.key === 'Backspace') {
+                if (calibrationTargetIndex) {
+                    e.preventDefault();
+                    handleDeleteSelectedLocation();
+                }
+                return;
+            }
+
+            // Ctrl+D to duplicate selected pin
+            if (e.ctrlKey && (e.key === 'd' || e.key === 'D')) {
+                e.preventDefault();
+                handleDuplicateSelectedLocation();
+                return;
+            }
+
+            // Esc to cancel Add Pin or deselect
+            if (e.key === 'Escape') {
+                if (isAddingPin) {
+                    e.preventDefault();
+                    setIsAddingPin(false);
+                } else if (calibrationTargetIndex) {
+                    e.preventDefault();
+                    setCalibrationTargetIndex(null);
+                }
+                return;
+            }
+        };
+
+        window.addEventListener('keydown', handleKeyDownGlobal);
+        return () => window.removeEventListener('keydown', handleKeyDownGlobal);
+    }, [
+        isCalibrating, 
+        calibrationTargetIndex, 
+        nudgeStep,
+        isAddingPin,
+        handleNudgeLocation, 
+        handlePreviousLocation, 
+        handleNextLocation, 
+        handleCenterSelectedLocation, 
+        handleUndo, 
+        handleRedo,
+        handleDeleteSelectedLocation,
+        handleDuplicateSelectedLocation
+    ]);
 
     const handleSummaryClose = () => {
         setIsQuizSummaryOpen(false);
@@ -250,64 +641,93 @@ const App: React.FC = () => {
     };
 
     return (
-        <div className={`app ${currentPage === 'map' ? 'map-view' : ''}`}>
-            {isCalibrating && (
-                <div className="calibration-banner">
-                    <i className="fas fa-crosshairs"></i> Calibration Mode Active
-                </div>
+        <div className={`app ${currentPage === 'map' ? 'map-view' : ''} ${mode === 'quiz' ? 'quiz-active' : ''} ${isCalibrating ? 'calibrating-active' : ''}`}>
+            {mode !== 'quiz' && (
+                <Header onNavigate={setCurrentPage} activePage={currentPage} />
             )}
-            <Header onNavigate={setCurrentPage} activePage={currentPage} />
 
             <main className="main-grid">
                 {currentPage === 'map' ? (
                     <>
                         <div className="map-section">
-                            <div className="controls-bar">
-                                <button 
-                                    className="category-btn" 
-                                    onClick={() => setIsCategoryModalOpen(true)}
-                                    aria-label={`Select category. Currently selected: ${selectedCategory}`}
-                                >
-                                    <i className={`fas ${activeSet.icon}`}></i>
-                                    <span>{selectedCategory}</span>
-                                    <i className="fas fa-chevron-down"></i>
-                                </button>
-                                {!isCalibrating && (
-                                    <div className="mode-switch" role="tablist" aria-label="Learning Mode">
-                                        <button 
-                                            className={`mode-btn ${mode === 'practice' ? 'active' : ''}`} 
-                                            onClick={() => setMode('practice')}
-                                            role="tab"
-                                            aria-selected={mode === 'practice'}
-                                        >
-                                            Practice
-                                        </button>
-                                        <button 
-                                            className={`mode-btn ${mode === 'quiz' ? 'active' : ''}`} 
-                                            onClick={startQuiz}
-                                            role="tab"
-                                            aria-selected={mode === 'quiz'}
-                                        >
-                                            Quiz
-                                        </button>
-                                    </div>
-                                )}
-                            </div>
-
-                            {mode === 'quiz' && !isCalibrating && (
-                                <div className="quiz-score-overlay floating-glass">
-                                    {streak > 1 && (
-                                        <div className="streak-display">
-                                            <i className="fas fa-fire"></i> x{streak}
+                            {/* Controls Bar (Only in Practice/Calibration Mode) */}
+                            {mode !== 'quiz' && (
+                                <div className="controls-bar-minimal">
+                                    <button 
+                                        className="category-trigger-minimal" 
+                                        onClick={() => setIsCategoryModalOpen(true)}
+                                        aria-label={`Select category: ${selectedCategory}`}
+                                    >
+                                        <i className={`fas ${activeSet.icon} category-icon-mini`}></i>
+                                        <span className="category-title-mini">{selectedCategory}</span>
+                                        <i className="fas fa-chevron-down category-chevron-mini"></i>
+                                    </button>
+                                    {!isCalibrating && (
+                                        <div className="mode-toggle-minimal" role="tablist" aria-label="Learning Mode">
+                                            <button 
+                                                className="mode-toggle-btn active" 
+                                                onClick={() => setMode('practice')}
+                                                role="tab"
+                                                aria-selected={true}
+                                            >
+                                                Practice
+                                            </button>
+                                            <button 
+                                                className="mode-toggle-btn" 
+                                                onClick={startQuiz}
+                                                role="tab"
+                                                aria-selected={false}
+                                            >
+                                                Quiz
+                                            </button>
                                         </div>
                                     )}
-                                    <div className="score-display">
-                                        <i className="fas fa-star" style={{ color: '#f59e0b' }}></i> {points}
+                                </div>
+                            )}
+
+                            {/* Top HUD (Only in Quiz Mode) */}
+                            {mode === 'quiz' && !isCalibrating && (
+                                <div className="quiz-hud-top-minimal" role="region" aria-label="Quiz Progress and Status">
+                                    <button 
+                                        className="quiz-hud-exit-btn" 
+                                        onClick={() => setMode('practice')}
+                                        title="Exit Quiz"
+                                        aria-label="Exit Quiz and return to Practice"
+                                    >
+                                        <i className="fas fa-arrow-left"></i>
+                                        <span className="exit-label">Exit</span>
+                                    </button>
+
+                                    <div className="quiz-hud-divider"></div>
+
+                                    <div className="quiz-hud-topic-text">
+                                        <i className={`fas ${activeSet.icon}`}></i>
+                                        <span>{selectedCategory}</span>
+                                    </div>
+
+                                    <div className="quiz-hud-divider"></div>
+
+                                    <div className="quiz-hud-progress-text">
+                                        {currentQuestionIndex + 1} / {quizQueue.length}
+                                    </div>
+
+                                    <div className="quiz-hud-divider"></div>
+
+                                    <div className="quiz-hud-stats">
+                                        {streak > 1 && <span className="quiz-hud-streak"><i className="fas fa-fire"></i> {streak}x</span>}
+                                        <span className="quiz-hud-score"><i className="fas fa-star"></i> {points}</span>
                                         {pointAnimation && (
-                                            <div key={pointAnimation.id} className={`point-float ${pointAnimation.val > 0 ? 'pos' : 'neg'}`}>
+                                            <span key={pointAnimation.id} className={`point-float-mini ${pointAnimation.val > 0 ? 'pos' : 'neg'}`}>
                                                 {pointAnimation.val > 0 ? '+' : ''}{pointAnimation.val}
-                                            </div>
+                                            </span>
                                         )}
+                                    </div>
+
+                                    <div className="quiz-hud-progress-line">
+                                        <div 
+                                            className="quiz-hud-progress-fill" 
+                                            style={{ width: `${((currentQuestionIndex + 1) / Math.max(1, quizQueue.length)) * 100}%` }}
+                                        />
                                     </div>
                                 </div>
                             )}
@@ -317,6 +737,8 @@ const App: React.FC = () => {
                                 onZoomOut={() => zoomAtCenter(1 / 1.2)} 
                                 onReset={resetView} 
                                 onShare={handleShare}
+                                isCalibrating={isCalibrating}
+                                onToggleCalibrate={() => setIsCalibrating(prev => !prev)}
                             />
 
                             <div 
@@ -325,11 +747,13 @@ const App: React.FC = () => {
                                 tabIndex={0}
                                 onKeyDown={handleKeyDown}
                                 onMouseDown={handleMouseDown}
+                                onMouseMove={handleMouseMoveOnMap}
+                                touch-action="none"
                                 onTouchStart={handleTouchStart}
                                 onTouchMove={handleTouchMove}
                                 onTouchEnd={handleTouchEnd}
                                 onClick={isCalibrating ? handleCalibrationMapClick : undefined}
-                                style={{ cursor: isCalibrating ? 'crosshair' : (isDragging ? 'grabbing' : 'grab'), outline: 'none' }}
+                                style={{ cursor: isCalibrating ? (isDragging ? 'grabbing' : 'crosshair') : (isDragging ? 'grabbing' : 'grab'), outline: 'none' }}
                                 aria-label="Interactive Map of India"
                             >
                                 <div style={{ 
@@ -343,22 +767,41 @@ const App: React.FC = () => {
                                             <filter id="shadow-sm" x="-50%" y="-50%" width="200%" height="200%">
                                                 <feDropShadow dx="0" dy="1" stdDeviation="1" floodColor="rgba(0,0,0,0.3)" />
                                             </filter>
+                                            <filter id="shadow-marker" x="-60%" y="-60%" width="220%" height="220%">
+                                                <feDropShadow dx="0" dy="1.5" stdDeviation="1.5" floodColor="rgba(15, 23, 42, 0.25)" />
+                                            </filter>
+
+                                            {/* Primary Jewel Gradient (Educational Teal) */}
+                                            <linearGradient id="marker-grad-primary" x1="0%" y1="0%" x2="100%" y2="100%">
+                                                <stop offset="0%" stopColor="#0d9488" />
+                                                <stop offset="100%" stopColor="#004d40" />
+                                            </linearGradient>
+
+                                            {/* Active Jewel Gradient (Vibrant Amber / Gold) */}
+                                            <linearGradient id="marker-grad-active" x1="0%" y1="0%" x2="100%" y2="100%">
+                                                <stop offset="0%" stopColor="#fbbf24" />
+                                                <stop offset="100%" stopColor="#d97706" />
+                                            </linearGradient>
+
+                                            {/* Success Jewel Gradient (Emerald) */}
+                                            <linearGradient id="marker-grad-success" x1="0%" y1="0%" x2="100%" y2="100%">
+                                                <stop offset="0%" stopColor="#34d399" />
+                                                <stop offset="100%" stopColor="#059669" />
+                                            </linearGradient>
+
+                                            {/* Error Jewel Gradient (Rose / Coral) */}
+                                            <linearGradient id="marker-grad-error" x1="0%" y1="0%" x2="100%" y2="100%">
+                                                <stop offset="0%" stopColor="#fb7185" />
+                                                <stop offset="100%" stopColor="#e11d48" />
+                                            </linearGradient>
+
+                                            {/* Calibration Target Jewel Gradient (Studio Yellow) */}
+                                            <linearGradient id="marker-grad-calib" x1="0%" y1="0%" x2="100%" y2="100%">
+                                                <stop offset="0%" stopColor="#fde047" />
+                                                <stop offset="100%" stopColor="#ca8a04" />
+                                            </linearGradient>
                                         </defs>
                                         <IndiaMapBackground />
-                                        
-                                        {/* Guidance Line for Wrong Answers */}
-                                        {mode === 'quiz' && quizFeedback === 'wrong' && wrongLocation && quizTarget && (
-                                            <line 
-                                                x1={wrongLocation.x} 
-                                                y1={wrongLocation.y} 
-                                                x2={quizTarget.coords.x} 
-                                                y2={quizTarget.coords.y} 
-                                                stroke="#ef4444" 
-                                                strokeWidth="40" 
-                                                strokeDasharray="100, 50"
-                                                className="guidance-line"
-                                            />
-                                        )}
 
                                         {/* Layer 1: Markers */}
                                         <MarkersLayer 
@@ -373,98 +816,213 @@ const App: React.FC = () => {
                                             quizFeedback={quizFeedback}
                                             wrongLocation={wrongLocation}
                                             markerScale={markerScale}
-                                            handleMapClick={handleMapClick}
+                                            handleMapClick={handleMarkerClick}
                                             handleMapDoubleClick={(loc: MapLocation) => setInfoModalData({ ...loc, icon: activeSet.icon })}
                                             setActiveLocationName={setActiveLocationName}
+                                            onMarkerDragStart={handleMarkerDragStart}
                                         />
 
-                                        {/* Layer 2: Labels */}
+                                        {/* Layer 2: Labels (with Anti-Collision Placement & Leader Lines) */}
                                         <LabelsLayer 
                                             locations={activeSet.locations}
                                             mode={mode}
                                             quizTarget={quizTarget}
                                             activeLocationName={activeLocationName}
                                             isCalibrating={isCalibrating}
+                                            calibrationTargetIndex={calibrationTargetIndex}
+                                            activeCatIndex={activeCatIndex}
                                             quizFeedback={quizFeedback}
-                                            isZoomedIn={viewState.k > 2}
+                                            wrongLocation={wrongLocation}
+                                            isZoomedIn={viewState.k >= 1.6}
                                             labelScale={labelScale}
+                                            onLabelClick={handleMarkerClick}
+                                            setActiveLocationName={setActiveLocationName}
                                         />
                                     </svg>
                                 </div>
                                 
-                                <CountdownOverlay count={countdownVal} />
-
-                                {quizFeedback !== 'none' && (
-                                    <div className={`feedback-toast ${quizFeedback}`} role="status" aria-live="polite">
-                                        {quizFeedback === 'correct' ? (
-                                            <><i className="fas fa-check-circle"></i> Correct!</>
-                                        ) : (
-                                            <><i className="fas fa-times-circle"></i> Wrong!</>
-                                        )}
+                                {isCalibrating && (
+                                    <div className="calib-desktop-only">
+                                        <CursorCoordsBadge coords={hoverSvgCoords} zoomLevel={viewState.k} />
                                     </div>
                                 )}
+
+                                {isCalibrating && isAddingPin && (
+                                    <div className="calib-desktop-only">
+                                        <AddPinBanner onCancel={() => setIsAddingPin(false)} />
+                                    </div>
+                                )}
+
+                                <CountdownOverlay count={countdownVal} />
                             </div>
 
-                            {/* Floating Quiz HUD */}
+                            {/* Floating Quiz Target & Feedback HUD (Unified, Non-Jumping) */}
                             {mode === 'quiz' && quizTarget && !countdownVal && !isCalibrating && (
-                                <div className="quiz-hud-floating-v3" role="region" aria-label="Active Quiz Target">
-                                    <div className="quiz-hud-progress-bar-v3">
-                                        <div 
-                                            className="quiz-hud-progress-fill-v3" 
-                                            style={{ width: `${((currentQuestionIndex + 1) / Math.max(1, quizQueue.length)) * 100}%` }}
-                                        ></div>
-                                    </div>
-                                    
-                                    <div className="quiz-hud-content-v3">
-                                        <div className="quiz-hud-top-v3">
-                                            <span className="quiz-hud-badge-v3">
-                                                <i className="fas fa-map-marker-alt"></i> Question {currentQuestionIndex + 1}/{quizQueue.length}
-                                            </span>
-                                        </div>
-                                        
-                                        <div className="quiz-hud-target-group-v3">
-                                            <span className="quiz-hud-label-v3">Locate on Map</span>
-                                            <h2 className="quiz-hud-target-name-v3">{quizTarget.name}</h2>
-                                        </div>
-
-                                        <div className="quiz-hud-actions-v3">
-                                            {hintRevealed ? (
-                                                <div className="hud-btn-v3 hint-active-v3" style={{ flexDirection: 'column', padding: '0.5rem' }}>
-                                                    <span style={{ fontSize: '0.7rem', opacity: 0.8 }}>Located in</span>
-                                                    <strong style={{ fontSize: '0.9rem' }}>{quizTarget.state}</strong>
+                                <div 
+                                    className={`quiz-hud-target-card ${quizFeedback !== 'none' ? `feedback-${quizFeedback}` : ''}`} 
+                                    role="region" 
+                                    aria-label="Active Quiz Target"
+                                >
+                                    {quizFeedback === 'none' ? (
+                                        <div className="target-hud-content">
+                                            <div className="target-hud-main">
+                                                <span className="target-hud-kicker">Locate on Map</span>
+                                                <div className="target-hud-title-row">
+                                                    <strong className="target-hud-name">{quizTarget.name}</strong>
+                                                    {hintRevealed && (
+                                                        <span className="target-hud-hint-badge">
+                                                            <i className="fas fa-map-marker-alt"></i> {quizTarget.state}
+                                                        </span>
+                                                    )}
                                                 </div>
-                                            ) : (
+                                            </div>
+
+                                            <div className="target-hud-actions">
+                                                {!hintRevealed ? (
+                                                    <button 
+                                                        className="target-hud-btn hint" 
+                                                        onClick={handleUseHint} 
+                                                        disabled={quizLocked}
+                                                        title="State Hint (-10 pts)"
+                                                    >
+                                                        <i className="far fa-lightbulb"></i> Hint
+                                                    </button>
+                                                ) : (
+                                                    <span className="target-hud-hint-active" title="Hint Revealed">
+                                                        <i className="fas fa-check"></i> State Shown
+                                                    </span>
+                                                )}
                                                 <button 
-                                                    className="hud-btn-v3 hint-btn-v3" 
-                                                    onClick={handleUseHint} 
+                                                    className="target-hud-btn skip" 
+                                                    onClick={skipQuestion} 
                                                     disabled={quizLocked}
-                                                    aria-label={`Get a hint for ${HINT_COST} points`}
+                                                    title="Skip Question"
                                                 >
-                                                    <i className="fas fa-lightbulb"></i> Hint <span className="hint-cost-v3">-{HINT_COST}</span>
+                                                    Skip <i className="fas fa-chevron-right"></i>
                                                 </button>
-                                            )}
-                                            <button 
-                                                className="hud-btn-v3 skip-btn-v3" 
-                                                onClick={skipQuestion} 
-                                                disabled={quizLocked}
-                                                aria-label="Skip question"
-                                            >
-                                                Skip <i className="fas fa-forward"></i>
-                                            </button>
+                                            </div>
                                         </div>
-                                    </div>
+                                    ) : (
+                                        <div className={`target-hud-feedback ${quizFeedback}`} role={quizFeedback === 'wrong' ? 'alert' : 'status'}>
+                                            <div className="feedback-icon-wrap">
+                                                <i className={`fas ${quizFeedback === 'correct' ? 'fa-check-circle' : 'fa-compass'}`}></i>
+                                            </div>
+                                            <div className="feedback-body">
+                                                {quizFeedback === 'correct' ? (
+                                                    <>
+                                                        <strong>Correct!</strong>
+                                                        <span>{quizTarget.name} ({quizTarget.state})</span>
+                                                    </>
+                                                ) : (
+                                                    <>
+                                                        <strong>Target Location</strong>
+                                                        <span>
+                                                            {lastClickedLocation 
+                                                                ? <>Tapped <strong>{lastClickedLocation.name}</strong> ({lastClickedLocation.state}) &bull; Target is in <strong>{quizTarget.state}</strong></> 
+                                                                : <>Target <strong>{quizTarget.name}</strong> is in <strong>{quizTarget.state}</strong></>}
+                                                        </span>
+                                                    </>
+                                                )}
+                                            </div>
+                                            {quizFeedback === 'correct' && (
+                                                <span className="feedback-pts-badge">+10 pts</span>
+                                            )}
+                                        </div>
+                                    )}
                                 </div>
                             )}
 
-                            {isCalibrating && (
-                                <button className="calibration-export-btn" onClick={() => setIsExportModalOpen(true)}>
-                                    <i className="fas fa-file-export"></i> Export Data
-                                </button>
-                            )}
+                            {/* Desktop Calibration Suite (hidden on mobile via CSS) */}
+                            <div className="calib-desktop-only">
+                                {isCalibrating && (
+                                    <CalibFloatingToolbar 
+                                        categories={calibratedMapData}
+                                        activeCategoryIndex={activeCatIndex}
+                                        onSelectCategoryIndex={handleSelectCategoryIndex}
+                                        isAddingPin={isAddingPin}
+                                        onToggleAddPin={() => setIsAddingPin(prev => !prev)}
+                                        canUndo={historyIndex > 0}
+                                        canRedo={historyIndex < history.length - 1}
+                                        onUndo={handleUndo}
+                                        onRedo={handleRedo}
+                                        onOpenExport={() => setIsExportModalOpen(true)}
+                                        onResetData={handleResetData}
+                                        hasActivePin={Boolean(calibrationTargetIndex)}
+                                        onExit={() => {
+                                            setIsCalibrating(false);
+                                            setIsAddingPin(false);
+                                            setCalibrationTargetIndex(null);
+                                        }}
+                                    />
+                                )}
+
+                                {isCalibrating && calibrationTargetIndex && activeSet.locations[calibrationTargetIndex.locIndex] && (
+                                    <CalibInspectorCard 
+                                        location={activeSet.locations[calibrationTargetIndex.locIndex]}
+                                        currentIndex={calibrationTargetIndex.locIndex}
+                                        totalLocations={activeSet.locations.length}
+                                        nudgeStep={nudgeStep}
+                                        onChangeNudgeStep={setNudgeStep}
+                                        onUpdateLocation={handleUpdateSelectedLocation}
+                                        onNudge={handleNudgeLocation}
+                                        onFocusLocation={handleCenterSelectedLocation}
+                                        onDuplicateLocation={handleDuplicateSelectedLocation}
+                                        onDeleteLocation={handleDeleteSelectedLocation}
+                                        onClose={() => setCalibrationTargetIndex(null)}
+                                        onPrevious={handlePreviousLocation}
+                                        onNext={handleNextLocation}
+                                        hasPrevious={calibrationTargetIndex.locIndex > 0}
+                                        hasNext={calibrationTargetIndex.locIndex < activeSet.locations.length - 1}
+                                    />
+                                )}
+                            </div>
+
+                            {/* Mobile Calibration Suite (hidden on desktop via CSS) */}
+                            <div className="calib-mobile-only">
+                                {isCalibrating && (
+                                    <MobileCalibSuite
+                                        categories={calibratedMapData}
+                                        activeCategoryIndex={activeCatIndex}
+                                        onSelectCategoryIndex={handleSelectCategoryIndex}
+                                        isAddingPin={isAddingPin}
+                                        onToggleAddPin={() => setIsAddingPin(prev => !prev)}
+                                        canUndo={historyIndex > 0}
+                                        canRedo={historyIndex < history.length - 1}
+                                        onUndo={handleUndo}
+                                        onRedo={handleRedo}
+                                        onOpenExport={() => setIsExportModalOpen(true)}
+                                        onResetData={handleResetData}
+                                        onExit={() => {
+                                            setIsCalibrating(false);
+                                            setIsAddingPin(false);
+                                            setCalibrationTargetIndex(null);
+                                        }}
+                                        selectedLocation={calibrationTargetIndex && activeSet.locations[calibrationTargetIndex.locIndex] ? activeSet.locations[calibrationTargetIndex.locIndex] : null}
+                                        currentIndex={calibrationTargetIndex ? calibrationTargetIndex.locIndex : 0}
+                                        totalLocations={activeSet.locations.length}
+                                        nudgeStep={nudgeStep}
+                                        onChangeNudgeStep={setNudgeStep}
+                                        onUpdateLocation={handleUpdateSelectedLocation}
+                                        onNudge={handleNudgeLocation}
+                                        onFocusLocation={handleCenterSelectedLocation}
+                                        onDuplicateLocation={handleDuplicateSelectedLocation}
+                                        onDeleteLocation={handleDeleteSelectedLocation}
+                                        onCloseInspector={() => setCalibrationTargetIndex(null)}
+                                        onPreviousLocation={handlePreviousLocation}
+                                        onNextLocation={handleNextLocation}
+                                        hasPrevious={calibrationTargetIndex ? calibrationTargetIndex.locIndex > 0 : false}
+                                        hasNext={calibrationTargetIndex ? calibrationTargetIndex.locIndex < activeSet.locations.length - 1 : false}
+                                        coords={hoverSvgCoords}
+                                        zoomLevel={viewState.k}
+                                        locations={activeSet.locations}
+                                        onSelectLocationIndex={(locIndex) => setCalibrationTargetIndex({ catIndex: activeCatIndex, locIndex })}
+                                    />
+                                )}
+                            </div>
                         </div>
 
-                        {/* Sidebar only for Practice List or Calibration */}
-                        {(mode === 'practice' || isCalibrating) && (
+                        {/* Sidebar: Regular Locations List for Practice Mode */}
+                        {mode === 'practice' && !isCalibrating && (
                             <aside className={`floating-sidebar ${isSidebarExpanded ? 'expanded' : ''}`} aria-label="Locations Sidebar">
                                 <div className="sidebar-header" onClick={() => setIsSidebarExpanded(!isSidebarExpanded)}>
                                     <div className="sidebar-handle-container">
@@ -472,7 +1030,7 @@ const App: React.FC = () => {
                                     </div>
                                     <div className="sidebar-title-row">
                                         <div className="sidebar-title-group">
-                                            <h2>{isCalibrating ? 'Calibrate' : 'Locations'}</h2>
+                                            <h2>Locations</h2>
                                             <span className="sidebar-subtitle">{activeSet.locations.length} items in {selectedCategory}</span>
                                         </div>
                                         <button 
@@ -487,54 +1045,43 @@ const App: React.FC = () => {
                                 
                                 <div className="sidebar-content">
                                     <div className="location-list" role="list">
-                                        {activeSet.locations.map((loc, i) => {
-                                            const isCalibratingTarget = isCalibrating && calibrationTargetIndex?.catIndex === activeCatIndex && calibrationTargetIndex?.locIndex === i;
-                                            return (
-                                                <div key={i} 
-                                                     className={`location-card ${activeLocationName === loc.name ? 'active' : ''} ${isCalibratingTarget ? 'calibrating' : ''}`}
-                                                     onClick={() => {
-                                                         if (isCalibrating) {
-                                                             setCalibrationTargetIndex({ catIndex: activeCatIndex, locIndex: i });
-                                                         } else {
-                                                             handlePracticeClick(loc);
-                                                         }
-                                                     }}
-                                                     role="listitem"
-                                                     tabIndex={0}
-                                                     onKeyDown={(e) => {
-                                                         if (e.key === 'Enter' || e.key === ' ') {
-                                                             if (!isCalibrating) handlePracticeClick(loc);
-                                                         }
-                                                     }}
-                                                >
-                                                    <div className="loc-icon">
-                                                        <i className={`fas ${activeSet.icon}`}></i>
-                                                    </div>
-                                                    <div className="loc-info">
-                                                        <span className="loc-name">{loc.name}</span>
-                                                        <span className="loc-meta">
-                                                            {isCalibrating ? `x: ${loc.coords.x}, y: ${loc.coords.y}` : <><i className="fas fa-map-pin"></i> {loc.state}</>}
-                                                        </span>
-                                                    </div>
-                                                    {!isCalibrating && (
-                                                        <div className="loc-actions">
-                                                            <button 
-                                                                className="info-btn-small" 
-                                                                onClick={(e) => { 
-                                                                    e.stopPropagation(); 
-                                                                    setInfoModalData({ ...loc, icon: activeSet.icon }); 
-                                                                }} 
-                                                                title="Show Details"
-                                                                aria-label={`Show details for ${loc.name}`}
-                                                            >
-                                                                <i className="fas fa-info-circle"></i>
-                                                            </button>
-                                                            <i className="fas fa-crosshairs loc-arrow"></i>
-                                                        </div>
-                                                    )}
+                                        {activeSet.locations.map((loc, i) => (
+                                            <div key={i} 
+                                                 className={`location-card ${activeLocationName === loc.name ? 'active' : ''}`}
+                                                 onClick={() => handlePracticeClick(loc)}
+                                                 role="listitem"
+                                                 tabIndex={0}
+                                                 onKeyDown={(e) => {
+                                                     if (e.key === 'Enter' || e.key === ' ') {
+                                                         handlePracticeClick(loc);
+                                                     }
+                                                 }}
+                                            >
+                                                <div className="loc-icon">
+                                                    <i className={`fas ${activeSet.icon}`}></i>
                                                 </div>
-                                            );
-                                        })}
+                                                <div className="loc-info">
+                                                    <span className="loc-name">{loc.name}</span>
+                                                    <span className="loc-meta">
+                                                        <i className="fas fa-map-pin"></i> {loc.state}
+                                                    </span>
+                                                </div>
+                                                <div className="loc-actions">
+                                                    <button 
+                                                        className="info-btn-small" 
+                                                        onClick={(e) => { 
+                                                            e.stopPropagation(); 
+                                                            setInfoModalData({ ...loc, icon: activeSet.icon }); 
+                                                        }} 
+                                                        title="Show Details"
+                                                        aria-label={`Show details for ${loc.name}`}
+                                                    >
+                                                        <i className="fas fa-info-circle"></i>
+                                                    </button>
+                                                    <i className="fas fa-crosshairs loc-arrow"></i>
+                                                </div>
+                                            </div>
+                                        ))}
                                     </div>
                                 </div>
                             </aside>
@@ -567,10 +1114,11 @@ const App: React.FC = () => {
                 onNextTopic={handleSummaryNextTopic}
             />
 
-            <CalibrationExportModal 
+            <StudioExportImportModal 
                 isOpen={isExportModalOpen}
                 onClose={() => setIsExportModalOpen(false)}
-                data={calibratedMapData}
+                mapData={calibratedMapData}
+                onImportData={handleImportData}
             />
 
             <LocationInfoModal 

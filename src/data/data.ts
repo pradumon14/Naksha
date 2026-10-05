@@ -546,10 +546,52 @@ export const mapData: MapCategory[] = [
  * Users can download high-res maps in various categories.
  */
 export const downloadsData: DownloadItem[] = [
-  { title: 'Political Map', description: 'States, UTs, and Capitals boundaries.', downloadUrl: 'https://drive.google.com/uc?export=download&id=1a1E8JlmZ7hyXbUesNdXRyXcj8GG10SW8', type: 'political', icon: 'fa-map-location-dot', size: '2.4 MB' },
-  { title: 'Physical Features', description: 'Major mountains, peaks, rivers, and plateaus.', downloadUrl: '#', type: 'physical', icon: 'fa-mountain-sun', size: '1.8 MB' },
-  { title: 'National Movement', description: 'Congress sessions & Independence centers.', downloadUrl: '#', type: 'history', icon: 'fa-scroll', size: '1.2 MB' },
-  { title: 'Rivers & Dams', description: 'Major river systems and dams projects.', downloadUrl: '#', type: 'water', icon: 'fa-water', size: '3.1 MB' },
+  { 
+    id: 'political-map',
+    title: 'Political Map', 
+    description: 'States, UTs, and Capitals boundaries.', 
+    downloadUrl: 'https://drive.google.com/uc?export=download&id=1a1E8JlmZ7hyXbUesNdXRyXcj8GG10SW8', 
+    type: 'political', 
+    category: 'outlines',
+    icon: 'fa-map-location-dot', 
+    size: '2.4 MB',
+    format: 'PDF',
+    isAvailable: true
+  },
+  { 
+    id: 'physical-features',
+    title: 'Physical Features', 
+    description: 'Major mountains, peaks, rivers, and plateaus.', 
+    downloadUrl: '#', 
+    type: 'physical', 
+    category: 'physical',
+    icon: 'fa-mountain-sun', 
+    size: '1.8 MB',
+    format: 'PDF',
+    isAvailable: false
+  },
+  { 
+    id: 'national-movement',
+    title: 'National Movement', 
+    description: 'Congress sessions & Independence centers.', 
+    downloadUrl: '#', 
+    type: 'history', 
+    category: 'history',
+    icon: 'fa-scroll', 
+    size: '1.2 MB',
+    format: 'PDF',
+    isAvailable: false
+  },
+  { 
+    id: 'rivers-dams',
+    title: 'Rivers & Dams', 
+    description: 'Major river systems and dams projects.', 
+    downloadUrl: '#', 
+    type: 'water', 
+    category: 'physical',
+    icon: 'fa-water', 
+    size: '3.1 MB',
+    format: 'PDF',
+    isAvailable: false
+  },
 ];
-
-

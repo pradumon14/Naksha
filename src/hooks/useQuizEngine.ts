@@ -56,6 +56,7 @@ export const useQuizEngine = () => {
     const [isQuizSummaryOpen, setIsQuizSummaryOpen] = useState(false);
     const [countdownVal, setCountdownVal] = useState<number | null>(null);
     const [wrongLocation, setWrongLocation] = useState<{ x: number, y: number } | null>(null);
+    const [lastClickedLocation, setLastClickedLocation] = useState<MapLocation | null>(null);
     const [pointAnimation, setPointAnimation] = useState<{ val: number, id: number } | null>(null);
 
     // Timer refs to prevent memory leaks and state updates after teardown
@@ -105,6 +106,7 @@ export const useQuizEngine = () => {
         setIsQuizSummaryOpen(false);
         setStreak(0);
         setWrongLocation(null);
+        setLastClickedLocation(null);
         setCountdownVal(null); 
     }, [clearAllTimers]);
 
@@ -132,6 +134,7 @@ export const useQuizEngine = () => {
             setHintRevealed(false);
             setQuizLocked(false);
             setWrongLocation(null);
+            setLastClickedLocation(null);
         } else {
             finishQuiz();
         }
@@ -139,6 +142,8 @@ export const useQuizEngine = () => {
 
     const handleMapClick = useCallback((loc: MapLocation) => {
         if (!quizActive || !quizTarget || quizLocked) return false;
+
+        setLastClickedLocation(loc);
 
         if (loc.name === quizTarget.name) {
             // Correct
@@ -156,10 +161,10 @@ export const useQuizEngine = () => {
             questionTimerRef.current = setTimeout(() => {
                 proceedToNextQuestion();
                 questionTimerRef.current = null;
-            }, 1500);
+            }, 1600);
             return true;
         } else {
-            // Wrong
+            // Wrong / Learning opportunity
             playSound('wrong');
             setQuizFeedback('wrong');
             setStreak(0);
@@ -177,7 +182,7 @@ export const useQuizEngine = () => {
             questionTimerRef.current = setTimeout(() => {
                 proceedToNextQuestion();
                 questionTimerRef.current = null;
-            }, 2500);
+            }, 2800);
             return false;
         }
     }, [quizActive, quizTarget, quizLocked, streak, proceedToNextQuestion, animatePoints]);
@@ -212,12 +217,13 @@ export const useQuizEngine = () => {
         setStreak(0);
         setCountdownVal(null);
         setWrongLocation(null);
+        setLastClickedLocation(null);
     }, [clearAllTimers]);
 
     return {
         quizActive, setQuizActive, quizQueue, currentQuestionIndex, quizTarget, points, setPoints,
         quizFeedback, hintRevealed, quizLocked, quizMistakes, isQuizSummaryOpen, setIsQuizSummaryOpen,
-        streak, countdownVal, setCountdownVal, wrongLocation, pointAnimation, setPointAnimation,
+        streak, countdownVal, setCountdownVal, wrongLocation, lastClickedLocation, pointAnimation, setPointAnimation,
         initQuizSession, finishQuiz, proceedToNextQuestion, handleMapClick, handleUseHint, skipQuestion, resetQuizState,
         animatePoints
     };

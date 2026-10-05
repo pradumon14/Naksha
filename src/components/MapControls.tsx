@@ -5,12 +5,21 @@ interface MapControlsProps {
     onZoomOut: () => void;
     onReset: () => void;
     onShare: () => void;
+    isCalibrating?: boolean;
+    onToggleCalibrate?: () => void;
 }
 
 /**
- * Floating map controls for zoom, reset, and sharing with accessibility.
+ * Floating map controls for zoom, reset, sharing, and dev tools with accessibility.
  */
-export const MapControls: React.FC<MapControlsProps> = ({ onZoomIn, onZoomOut, onReset, onShare }) => {
+export const MapControls: React.FC<MapControlsProps> = ({ 
+    onZoomIn, 
+    onZoomOut, 
+    onReset, 
+    onShare,
+    isCalibrating,
+    onToggleCalibrate 
+}) => {
     return (
         <div className="map-zoom-controls" role="toolbar" aria-label="Map Navigation Controls">
             <button onClick={onZoomIn} title="Zoom In" aria-label="Zoom in on map">
@@ -25,6 +34,16 @@ export const MapControls: React.FC<MapControlsProps> = ({ onZoomIn, onZoomOut, o
             <button onClick={onShare} title="Share Naksha" aria-label="Share Naksha platform">
                 <i className="fas fa-share-alt"></i>
             </button>
+            {onToggleCalibrate && (
+                <button 
+                    onClick={onToggleCalibrate} 
+                    className={`dev-toggle-map-btn ${isCalibrating ? 'active' : ''}`}
+                    title={isCalibrating ? "Close Dev Tools (Alt+C)" : "Open Dev Tools & Calibration (Alt+C)"} 
+                    aria-label="Toggle Calibration & Dev Tools"
+                >
+                    <i className="fas fa-crosshairs"></i>
+                </button>
+            )}
         </div>
     );
 };
